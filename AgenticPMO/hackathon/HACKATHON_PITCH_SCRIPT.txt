@@ -1,0 +1,60 @@
+Agentic PMO + QA Sentinel — 3-minute demo (POC)
+==============================================
+
+One line for judges
+
+- "We built a POC where both systems work independently, but when combined, our PMO intelligence automatically triggers a QA agent to validate deployments."
+
+
+
+What this IS
+
+- Proof of concept: integration idea + one working demo flow — not production scale.
+
+
+
+POSITIONING (say once)
+
+- "This is a proof of concept demonstrating how SDLC tracking and automated validation can be seamlessly integrated."
+
+
+
+PROBLEM (~30s)
+
+- Status and QA are disconnected: PMO needs tickets and timelines; QA needs a predictable check after deploy.
+
+
+
+SOLUTION (~45s)
+
+- Theme 2 (PMO): Jira-informed dashboard, insights, handshake POST /api/v1/integrations/qa-trigger.
+
+- Theme 1 (QA): qa-runner opens a URL → one lightweight action → one assertion → Pass/Fail + screenshot.
+
+- Combined: Trigger PMO handshake, then run Playwright against TARGET_URL; on FAIL, POST /api/v1/integrations/qa-report can create a lightweight Jira Task for tracking (credentials optional — demo works without auto-Jira too).
+
+
+
+LIVE DEMO (~90s)
+
+1) Dashboard — Executive line + synthesis (project APL or your demo key).
+
+2) "Trigger QA Sentinel" → 202 + trace (Theme 2 → Theme 1 contract).
+
+3) Terminal: qa-runner → npm ci && npm run test — show test-results/poc-validation.png.
+
+
+
+CLOSE (~15s)
+
+- Independent value: PMO alone; QA alone against TARGET_URL.
+
+- Combined story: validate deployments right after orchestration triggers — roadmap to CI/Git commits linking to Jira.
+
+
+
+Do NOT over-explain
+
+- One flow, one trigger, one result, screenshots for the win. Skip full automation fantasies.
+
+

@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --surface: 248 250 252;
+  --surface-muted: 241 245 249;
+  --border: 226 232 240;
+}
+
+.dark {
+  --surface: 15 23 42;
+  --surface-muted: 30 41 59;
+  --border: 51 65 85;
+}
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+  body {
+    @apply bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100;
+  }
+}
+
+/* Scrollbar — subtle enterprise */
+.log-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.log-scroll::-webkit-scrollbar-thumb {
+  @apply rounded-full bg-slate-300 dark:bg-slate-600;
+}
+
+/* --- Demo loan UI bugs (Playwright targets) --- */
+.error-banner--broken {
+  color: rgb(248 250 252);
+  background: rgb(248 250 252);
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0.04;
+  margin: 0;
+  padding: 0;
+  font-size: 0.65rem;
+  line-height: 0;
+}
+
+@media (max-width: 640px) {
+  .submit-row--broken {
+    display: flex;
+    justify-content: flex-end;
+    transform: translateX(calc(100vw - 120px));
+    max-width: 100%;
+    overflow: visible;
+  }
+}

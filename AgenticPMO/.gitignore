@@ -1,0 +1,47 @@
+HELP.md
+### Local secrets (Jira, etc.) — copy from application-local.example.properties
+src/main/resources/application-local.properties
+qa-sentinel-ui/node_modules/
+qa-sentinel-ui/dist/
+demo-loan-app/node_modules/
+demo-loan-app/client/node_modules/
+demo-loan-app/client/dist/
+qa-runner/node_modules/
+qa-runner/test-results/
+qa-runner/playwright-report/
+.gradle
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+bin/
+!**/src/main/**/bin/
+!**/src/test/**/bin/
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+out/
+!**/src/main/**/out/
+!**/src/test/**/out/
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+### VS Code ###
+.vscode/

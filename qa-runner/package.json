@@ -1,0 +1,15 @@
+{
+  "name": "qa-sentinel-mini",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Theme 1 minimal probe — expand to full Playwright + LLM after hackathon",
+  "scripts": {
+    "test": "playwright test",
+    "test:demo-loan": "playwright test tests/demo-loan-app.spec.js",
+    "install-browsers": "playwright install chromium",
+    "postinstall": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
+  }
+}

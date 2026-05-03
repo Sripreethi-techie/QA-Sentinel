@@ -1,0 +1,12 @@
+backend/build/
+backend/bin/
+backend/.gradle/
+# Local secrets — use application-local.example.properties as a template
+backend/src/main/resources/application-local.properties
+frontend/node_modules/
+frontend/dist/
+qa-runner/node_modules/
+qa-runner/test-results/
+**/.DS_Store
+*.iml
+.idea/

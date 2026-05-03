@@ -1,0 +1,18 @@
+[
+  {
+    "stepNumber": 1,
+    "action": "navigate",
+    "description": "Navigate to the loan application under test (TARGET_URL / default env base URL).",
+    "target": "",
+    "value": "",
+    "expected": ""
+  },
+  {
+    "stepNumber": 2,
+    "action": "verify",
+    "description": "Assert presence of QA Sentinel demo-locked sentinel node (snapshot produced from Groq-style JSON; selector intentionally absent so the run deterministically fails and files a real Jira bug).",
+    "target": "[data-qa-sentinel-demo-locked-expect-fail]",
+    "value": "",
+    "expected": "visible"
+  }
+]

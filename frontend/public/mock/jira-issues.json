@@ -1,0 +1,40 @@
+{
+  "issues": [
+    {
+      "key": "DEMO-1",
+      "fields": {
+        "summary": "E2E: Login must reject invalid credentials (demo PRD)",
+        "status": { "name": "To Do" },
+        "assignee": { "displayName": "QA Sentinel Demo" },
+        "updated": "2026-05-01T10:00:00.000+0000"
+      }
+    },
+    {
+      "key": "DEMO-101",
+      "fields": {
+        "summary": "Checkout flow — UAT findings",
+        "status": { "name": "QA" },
+        "assignee": { "displayName": "Jamie Lee" },
+        "updated": "2026-04-20T14:30:00.000+0000"
+      }
+    },
+    {
+      "key": "DEMO-102",
+      "fields": {
+        "summary": "Partner API rate limit change",
+        "status": { "name": "Code Review" },
+        "assignee": { "displayName": "Ravi Kumar" },
+        "updated": "2026-04-21T09:15:00.000+0000"
+      }
+    },
+    {
+      "key": "DEMO-103",
+      "fields": {
+        "summary": "Mobile push registration",
+        "status": { "name": "In Progress" },
+        "assignee": { "displayName": "Alex Chen" },
+        "updated": "2026-04-22T08:00:00.000+0000"
+      }
+    }
+  ]
+}
