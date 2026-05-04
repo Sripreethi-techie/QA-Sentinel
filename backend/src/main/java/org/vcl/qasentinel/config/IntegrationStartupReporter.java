@@ -56,7 +56,7 @@ public class IntegrationStartupReporter implements ApplicationRunner {
 
 	private String groqLine() {
 		if (!groqProperties.isConfigured()) {
-			return "Groq: not configured — set groq.api-key for AI-derived test steps (zero-scripting)";
+			return "Groq: not configured — set GROQ_API_TOKEN (or groq.api-key) for AI-derived test steps (zero-scripting)";
 		}
 		return "Groq: Done — API key set (model " + groqProperties.getModel() + ")";
 	}

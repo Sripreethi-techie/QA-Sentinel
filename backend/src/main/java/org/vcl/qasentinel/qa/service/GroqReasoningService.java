@@ -15,12 +15,14 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.vcl.qasentinel.config.GroqProperties;
 import org.vcl.qasentinel.qa.model.TestStep;
+import org.vcl.qasentinel.util.HttpRetry;
 
 /**
  * Calls Groq's OpenAI-compatible Chat Completions API via {@link RestClient} to turn Jira title +
@@ -128,7 +130,7 @@ public class GroqReasoningService {
 			log.info("[Groq] suggest alternative raw output for issue {} step {}:\n{}", issueKey, num, content == null ? "" : content);
 			List<TestStep> parsed = parseStepsFromLlmContent(content);
 			if (!parsed.isEmpty()) {
-				TestStep s = parsed.getFirst();
+				TestStep s = parsed.get(0);
 				return Optional.of(
 						new TestStep(
 								num,
@@ -351,24 +353,41 @@ public class GroqReasoningService {
 		String jsonPayload = objectMapper.writeValueAsString(body);
 		log.debug("[Groq] POST {}/chat/completions model={} issue={}", base, groqProperties.getModel(), issueKey);
 
-		RestClient client = RestClient.builder()
-				.baseUrl(base)
-				.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + groqProperties.getApiKey().trim())
-				.defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
-				.build();
-
-		String response = client.post()
-				.uri("/chat/completions")
-				.contentType(MediaType.APPLICATION_JSON)
-				.body(jsonPayload)
-				.retrieve()
-				.body(String.class);
+		String response = postGroqWithRetries(base, jsonPayload, issueKey);
 
 		if (response == null || response.isBlank()) {
 			throw new IllegalArgumentException("empty Groq response");
 		}
 		var tree = objectMapper.readTree(response);
 		return tree.path("choices").path(0).path("message").path("content").asText("");
+	}
+
+	private String postGroqWithRetries(String base, String jsonPayload, String logIssueKey) {
+		RestClientException last = null;
+		for (int attempt = 0; attempt < 3; attempt++) {
+			try {
+				RestClient client = RestClient.builder()
+						.baseUrl(base)
+						.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + groqProperties.getApiKey().trim())
+						.defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
+						.build();
+				return client.post()
+						.uri("/chat/completions")
+						.contentType(MediaType.APPLICATION_JSON)
+						.body(jsonPayload)
+						.retrieve()
+						.body(String.class);
+			}
+			catch (RestClientException ex) {
+				last = ex;
+				if (!HttpRetry.isRetryable(ex) || attempt == 2) {
+					throw ex;
+				}
+				log.warn("Groq HTTP retry {} for issue {}: {}", attempt + 1, logIssueKey, ex.getMessage());
+				HttpRetry.sleepBackoffMs(attempt);
+			}
+		}
+		throw last != null ? last : new IllegalStateException("Groq request failed after retries");
 	}
 
 	private static String stripMarkdownFence(String s) {
@@ -506,18 +525,7 @@ public class GroqReasoningService {
 		String jsonPayload = objectMapper.writeValueAsString(body);
 		log.debug("[Groq] POST {}/chat/completions model={} label={}", base, groqProperties.getModel(), logLabel);
 
-		RestClient client = RestClient.builder()
-				.baseUrl(base)
-				.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + groqProperties.getApiKey().trim())
-				.defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)
-				.build();
-
-		String response = client.post()
-				.uri("/chat/completions")
-				.contentType(MediaType.APPLICATION_JSON)
-				.body(jsonPayload)
-				.retrieve()
-				.body(String.class);
+		String response = postGroqWithRetries(base, jsonPayload, logLabel);
 
 		if (response == null || response.isBlank()) {
 			throw new IllegalArgumentException("empty Groq response");

@@ -17,7 +17,11 @@ function BugScreenshot({
     return (
       <div className="flex h-full w-full flex-col items-center justify-center gap-2 p-3 text-center text-xs text-slate-500 dark:text-slate-400">
         <ImageOff className="h-8 w-8 opacity-60" strokeWidth={1.25} />
-        <span>{screenshotPath ? `No file at ${screenshotPath}` : "No screenshot path"}</span>
+        <span>
+          {screenshotPath
+            ? `Screenshot not available on the server (path hint: ${screenshotPath})`
+            : "No screenshot path"}
+        </span>
       </div>
     );
   }
@@ -103,7 +107,7 @@ export function BugReportsPage() {
           <li className="rounded-xl border border-dashed border-slate-200 bg-white/50 p-10 text-center text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900/30 dark:text-slate-400">
             No bugs recorded on the server yet. Run{" "}
             <span className="font-mono text-slate-700 dark:text-slate-300">POST /api/v1/qa/flow/SCRUM-1</span> (or use
-            Run QA) to produce a failure; bugs are filed as real Jira issues when credentials are configured.
+            Run Agent) to produce failures; bugs are filed as real Jira issues when credentials are configured.
           </li>
         ) : null}
         {reports.map((b) => (

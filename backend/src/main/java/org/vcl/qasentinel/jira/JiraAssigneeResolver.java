@@ -50,7 +50,7 @@ public class JiraAssigneeResolver {
 		if (!jiraProperties.isEnabled() || !jiraProperties.isRealConnectionConfigured()) {
 			return Optional.empty();
 		}
-		String base = jiraProperties.getBaseUrl().trim().replaceAll("/+$", "");
+		String base = jiraProperties.getApiBaseUrl().trim().replaceAll("/+$", "");
 		RestClient client = RestClient.builder()
 				.baseUrl(base)
 				.defaultHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON_VALUE)

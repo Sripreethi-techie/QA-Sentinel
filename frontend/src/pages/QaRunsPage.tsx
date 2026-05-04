@@ -60,7 +60,7 @@ export function QaRunsPage() {
         <ul className="mt-4 space-y-1">
           {runs.length === 0 ? (
             <li className="rounded-lg border border-dashed border-slate-200 p-4 text-sm text-slate-500 dark:border-slate-700">
-              No runs yet. Use Run QA in the header.
+              No runs yet. Use Run Agent in the header to batch all stories in the project.
             </li>
           ) : (
             runs.map((r) => (

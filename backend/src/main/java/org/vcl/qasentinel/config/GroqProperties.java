@@ -11,7 +11,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @AllArgsConstructor
 public class GroqProperties {
 
-	/** Groq API key; leave blank to disable LLM step planning (zero-scripting requires a key). */
+	/** Groq API key; maps from env GROQ_API_TOKEN via application.properties, or set groq.api-key. Blank disables LLM step planning. */
 	private String apiKey = "";
 
 	private String model = "llama-3.3-70b-versatile";

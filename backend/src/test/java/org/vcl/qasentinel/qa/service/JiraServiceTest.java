@@ -24,9 +24,11 @@ class JiraServiceTest {
 				"Locator timeout waiting for welcome",
 				"2026-01-15T10:00:00Z",
 				"test-results/dynamic-failure-trace.zip",
-				"test-results/dynamic-failure-console.log");
+				"test-results/dynamic-failure-console.log",
+				"https://acme.atlassian.net/browse/DEMO-1");
 		assertThat(desc).contains("QA Sentinel");
-		assertThat(desc).contains("Source story / issue key: DEMO-1");
+		assertThat(desc).contains("Source user story / issue key: DEMO-1");
+		assertThat(desc).contains("Open this story in Jira: https://acme.atlassian.net/browse/DEMO-1");
 		assertThat(desc).contains("Correlation ID (service logs): trace-abc");
 		assertThat(desc).contains("Steps");
 		assertThat(desc).contains("1. navigate");
@@ -45,7 +47,8 @@ class JiraServiceTest {
 		assertThat(desc).contains("x.png");
 		assertThat(desc).contains("playwright show-trace");
 		assertThat(desc).contains("Jira linkage");
-		assertThat(desc).contains("DEMO-1");
+		assertThat(desc).contains("Linked work");
+		assertThat(desc).contains("dynamic-failure.png");
 	}
 
 	@Test

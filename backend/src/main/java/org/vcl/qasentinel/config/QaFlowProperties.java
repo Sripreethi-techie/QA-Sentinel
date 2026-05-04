@@ -44,4 +44,22 @@ public class QaFlowProperties {
 
 	/** Extra JQL fragment appended after issuetype clause (e.g. {@code AND statusCategory != Done}). */
 	private String batchJqlSuffix = "";
+
+	/**
+	 * Max concurrent {@link #runQaFlow(String)} executions in batch mode. Values greater than 1 ignore
+	 * {@link #batchDelayMsBetweenStories} (delay is only applied when concurrency is 1).
+	 */
+	private int batchConcurrency = 1;
+
+	/** Milliseconds to wait before each story when {@link #batchConcurrency} is 1 (rate limiting). */
+	private int batchDelayMsBetweenStories = 0;
+
+	/** When true, batch lists stories but does not run Playwright or file bugs. */
+	private boolean batchDryRun = false;
+
+	/**
+	 * When false, target env URLs that resolve to private RFC1918 hosts are rejected (localhost and 127.0.0.1 still
+	 * allowed for local dev).
+	 */
+	private boolean allowPrivateEnvUrls = true;
 }

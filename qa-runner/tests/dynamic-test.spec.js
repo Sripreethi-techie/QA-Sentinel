@@ -1,37 +1,6 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
 import { test, expect } from "@playwright/test";
-import {
-  assertValidation,
-  validateInvalidApplyRejected,
-  validateLoanListEnvelope,
-  validateListReflectsSubmission,
-  validateLoanListEmailColumnShape,
-} from "./loan-api-validation.js";
-
-const RESULT_DIR = "test-results";
-
-/** Default: Spring Boot + bundled SPA ({@code /loan}). Override with LOAN_ORIGIN or TARGET_URL. See RUNBOOK.md */
-function resolveLoanOrigin() {
-  const raw =
-    process.env.LOAN_ORIGIN?.trim() ||
-    process.env.DEMO_LOAN_BASE_URL?.trim() ||
-    process.env.TARGET_URL?.trim() ||
-    "";
-  if (!raw) return "http://localhost:9096";
-  try {
-    const u = new URL(/^https?:\/\//i.test(raw) ? raw : `http://${raw}`);
-    const p = u.pathname.replace(/\/$/, "") || "/";
-    if (p.endsWith("/loan")) {
-      u.pathname = "/";
-    }
-    return u.origin;
-  } catch {
-    return "http://localhost:9096";
-  }
-}
-const LOAN_ORIGIN = resolveLoanOrigin();
-const DEMO_LOAN_PAGE = `${LOAN_ORIGIN}/loan`;
+import { DEMO_LOAN_PAGE, LOAN_ORIGIN, RESULT_DIR } from "./loan-test-env.js";
 
 const FAILURE_SHOT = `${RESULT_DIR}/dynamic-failure.png`;
 const FAILURE_EVIDENCE = `${RESULT_DIR}/dynamic-failure-evidence.json`;
@@ -418,8 +387,22 @@ async function postQaReport(passed, message, screenshotHint) {
   }
 }
 
+/** Groq sometimes emits /Loan; the bundled route is /loan. */
+function normalizeLocalLoanUrl(url) {
+  try {
+    const u = new URL(url);
+    if (u.pathname.replace(/\/$/, "").toLowerCase() === "/loan") {
+      u.pathname = "/loan";
+      return u.toString();
+    }
+  } catch {
+    /* keep original */
+  }
+  return url;
+}
+
 async function runNavigate(page, step, fallbackUrl) {
-  const url = pickNavigateUrl(step, fallbackUrl);
+  const url = normalizeLocalLoanUrl(pickNavigateUrl(step, fallbackUrl));
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 });
 }
 
@@ -530,10 +513,16 @@ test.describe("QA Sentinel — dynamic Groq-driven runner", () => {
     async function failAndRethrow(e, failedStepIndex, failedStep) {
       let shot = "";
       try {
+        mkdirSync(RESULT_DIR, { recursive: true });
         await page.screenshot({ path: FAILURE_SHOT, fullPage: true });
         shot = FAILURE_SHOT;
       } catch {
-        /* ignore */
+        try {
+          await page.screenshot({ path: FAILURE_SHOT, fullPage: false });
+          shot = FAILURE_SHOT;
+        } catch {
+          /* ignore */
+        }
       }
       await stopSentinelTraceToZip(context, TRACE_ZIP);
       const hadConsole = writeConsoleLogFile(consoleBuffer);
@@ -599,83 +588,5 @@ test.describe("QA Sentinel — dynamic Groq-driven runner", () => {
       }
       await failAndRethrow(e, null, null);
     }
-  });
-});
-
-test.describe("demo loan application (assertions surface known bugs)", () => {
-  /**
-   * @param {import("@playwright/test").Page} page
-   * @param {import("@playwright/test").TestInfo} testInfo
-   * @param {string} fileName
-   */
-  async function captureStep(page, testInfo, fileName) {
-    mkdirSync(RESULT_DIR, { recursive: true });
-    const buf = await page.screenshot({ fullPage: true });
-    writeFileSync(join(RESULT_DIR, fileName), buf);
-    await testInfo.attach(fileName, { body: buf, contentType: "image/png" });
-  }
-
-  test("invalid form: client error must be readable (fails: broken error banner opacity)", async ({
-    page,
-  }, testInfo) => {
-    await page.goto(`${DEMO_LOAN_PAGE}/`, { waitUntil: "domcontentloaded", timeout: 60_000 });
-    await captureStep(page, testInfo, "loan-ui-01-nav.png");
-
-    await page.getByLabel(/Full name/i).fill("x");
-    await page.getByLabel(/Email/i).fill("not-an-email");
-    await page.getByLabel(/Loan amount/i).fill("-1");
-    await captureStep(page, testInfo, "loan-ui-02-filled-invalid.png");
-
-    await page.getByTestId("submit-loan").click();
-    await page.locator(".error-banner--broken").waitFor({ state: "attached", timeout: 15_000 });
-    await captureStep(page, testInfo, "loan-ui-03-after-submit.png");
-
-    const banner = page.locator(".error-banner--broken");
-    const opacity = await banner.evaluate((el) => parseFloat(getComputedStyle(el).opacity));
-    // Correct UX: user-visible error (demo uses near-zero opacity on `.error-banner--broken`)
-    expect(opacity, "error banner should be clearly visible").toBeGreaterThan(0.85);
-    await expect(banner).toBeVisible();
-  });
-
-  test("API: invalid apply payload must be rejected (fails: always 200 + success)", async ({ request }) => {
-    const res = await request.post(`${LOAN_ORIGIN}/api/loan/apply`, {
-      data: { name: "", email: "bad", loanAmount: "0" },
-    });
-    const json = await res.json();
-    assertValidation(validateInvalidApplyRejected(res.status(), json), "POST /api/loan/apply invalid");
-  });
-
-  test("API: list must reflect submission and use well-formed emails (fails: swap + amount)", async ({
-    request,
-  }) => {
-    const suffix = Date.now();
-    const submitted = {
-      name: `APIVal ${suffix}`,
-      email: `apival-${suffix}@example.com`,
-      loanAmount: "8800",
-    };
-    const applyRes = await request.post(`${LOAN_ORIGIN}/api/loan/apply`, {
-      data: submitted,
-    });
-    expect(applyRes.ok()).toBeTruthy();
-    const applyJson = await applyRes.json();
-    const id = /** @type {{ id?: string }} */ (applyJson).id;
-    expect(id, "apply response should include id").toBeTruthy();
-
-    const listRes = await request.get(`${LOAN_ORIGIN}/api/loan/list`);
-    expect(listRes.ok()).toBeTruthy();
-    const listJson = await listRes.json();
-    assertValidation(validateLoanListEnvelope(listJson), "GET /api/loan/list envelope");
-    const { applications } = /** @type {{ applications: unknown[] }} */ (listJson);
-    const appId = /** @type {string} */ (id);
-    const shape = validateLoanListEmailColumnShape(applications, appId);
-    const match = validateListReflectsSubmission(applications, submitted, appId);
-    assertValidation(
-      {
-        ok: shape.ok && match.ok,
-        errors: [...shape.errors, ...match.errors],
-      },
-      "GET /api/loan/list semantics (shape + fidelity)",
-    );
   });
 });

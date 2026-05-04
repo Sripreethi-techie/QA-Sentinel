@@ -14,6 +14,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import org.vcl.qasentinel.config.JiraProperties;
 import org.vcl.qasentinel.config.PlaywrightProperties;
 import org.vcl.qasentinel.config.QaFlowProperties;
 import org.vcl.qasentinel.jira.JiraAssigneeResolver;
@@ -35,6 +36,11 @@ public class JiraService {
 	private final JiraAssigneeResolver jiraAssigneeResolver;
 	private final PlaywrightProperties playwrightProperties;
 	private final QaFlowProperties qaFlowProperties;
+	private final JiraProperties jiraProperties;
+
+	public List<String> listIssueTypeNamesForProject(String projectKey) {
+		return jiraSearchClient.listIssueTypeNamesForProject(projectKey);
+	}
 
 	public List<JiraIssueView> searchIssues(String projectKey) {
 		return jiraSearchClient.searchByProject(projectKey);
@@ -175,7 +181,9 @@ public class JiraService {
 				exactError,
 				failureTimestampUtc,
 				traceZipHint,
-				consoleLogHint);
+				consoleLogHint,
+				storyJiraBrowseUrl(relatedIssueKey));
+		String summary = buildQaSentinelBugSummary(relatedIssueKey, failureReason);
 		List<Path> attachments = new ArrayList<>();
 		Path screenshotFile = resolvePlaywrightScreenshot(screenshotHint);
 		if (screenshotFile != null) {
@@ -191,42 +199,51 @@ public class JiraService {
 		}
 		return jiraBugService.createQaSentinelBug(
 				projectKey,
-				QA_SENTINEL_BUG_SUMMARY,
+				summary,
 				description,
 				relatedIssueKey,
 				attachments,
 				resolveDefaultAssigneeAccountId());
 	}
 
+	/** Jira browse URL for the user story under test (so the bug description links back to the story). */
+	private String storyJiraBrowseUrl(String relatedIssueKey) {
+		if (relatedIssueKey == null || relatedIssueKey.isBlank()) {
+			return "";
+		}
+		String base = jiraProperties.getApiBaseUrl();
+		if (base == null || base.isBlank()) {
+			return "";
+		}
+		return base.trim().replaceAll("/+$", "") + "/browse/" + relatedIssueKey.trim();
+	}
+
+	/**
+	 * Bug summary: ties the ticket to the story in lists and search (Jira caps length in {@link JiraBugService}).
+	 */
+	private static String buildQaSentinelBugSummary(String relatedIssueKey, String failureReason) {
+		String key = relatedIssueKey == null || relatedIssueKey.isBlank() ? "story" : relatedIssueKey.trim();
+		String one = failureReason == null ? "" : failureReason.replace('\r', ' ').replace('\n', ' ').trim();
+		if (one.length() > 100) {
+			one = one.substring(0, 97) + "...";
+		}
+		String tail = one.isEmpty() ? "Playwright regression failure" : one;
+		return "QA Sentinel — " + key + " — " + tail;
+	}
+
 	/**
 	 * Resolves Playwright failure screenshot to an on-disk path for Jira multipart upload.
-	 * Prefers {@code qa-runner/test-results/dynamic-failure.png} under the configured working directory.
+	 * Uses {@code test-results/dynamic-failure.png} under the configured working directory, then path hints
+	 * normalized with {@link PlaywrightArtifactPathResolver} (legacy {@code qa-runner/test-results/…} included).
 	 */
 	Path resolvePlaywrightScreenshot(String screenshotHint) {
 		File wd = new File(playwrightProperties.getWorkingDir()).getAbsoluteFile();
-		Path underRunner = wd.toPath().resolve("test-results").resolve("dynamic-failure.png");
+		Path root = wd.toPath().toAbsolutePath().normalize();
+		Path underRunner = root.resolve("test-results").resolve("dynamic-failure.png");
 		if (Files.isRegularFile(underRunner)) {
 			return underRunner;
 		}
-		if (screenshotHint == null || screenshotHint.isBlank()) {
-			return null;
-		}
-		Path hinted = Paths.get(screenshotHint.trim());
-		if (hinted.isAbsolute() && Files.isRegularFile(hinted)) {
-			return hinted;
-		}
-		File parent = wd.getParentFile();
-		if (parent != null) {
-			Path fromProjectRoot = parent.toPath().resolve(screenshotHint.trim()).normalize();
-			if (Files.isRegularFile(fromProjectRoot)) {
-				return fromProjectRoot;
-			}
-		}
-		Path relativeToRunner = wd.toPath().resolve(screenshotHint.trim()).normalize();
-		if (Files.isRegularFile(relativeToRunner)) {
-			return relativeToRunner;
-		}
-		return null;
+		return PlaywrightArtifactPathResolver.resolveExisting(root, screenshotHint).orElse(null);
 	}
 
 	/**
@@ -234,29 +251,12 @@ public class JiraService {
 	 */
 	Path resolvePlaywrightArtifact(String hint, String defaultRelativeToRunner) {
 		File wd = new File(playwrightProperties.getWorkingDir()).getAbsoluteFile();
-		Path underRunner = wd.toPath().resolve(defaultRelativeToRunner.replace("\\", "/"));
+		Path root = wd.toPath().toAbsolutePath().normalize();
+		Path underRunner = root.resolve(defaultRelativeToRunner.replace("\\", "/"));
 		if (Files.isRegularFile(underRunner)) {
 			return underRunner;
 		}
-		if (hint == null || hint.isBlank()) {
-			return null;
-		}
-		Path hinted = Paths.get(hint.trim());
-		if (hinted.isAbsolute() && Files.isRegularFile(hinted)) {
-			return hinted;
-		}
-		File parent = wd.getParentFile();
-		if (parent != null) {
-			Path fromProjectRoot = parent.toPath().resolve(hint.trim()).normalize();
-			if (Files.isRegularFile(fromProjectRoot)) {
-				return fromProjectRoot;
-			}
-		}
-		Path relativeToRunner = wd.toPath().resolve(hint.trim()).normalize();
-		if (Files.isRegularFile(relativeToRunner)) {
-			return relativeToRunner;
-		}
-		return null;
+		return PlaywrightArtifactPathResolver.resolveExisting(root, hint).orElse(null);
 	}
 
 	static String buildPlaywrightFailureDescription(
@@ -270,7 +270,8 @@ public class JiraService {
 			String exactError,
 			String failureTimestampUtc,
 			String traceZipHint,
-			String consoleLogHint) {
+			String consoleLogHint,
+			String storyBrowseUrl) {
 		String story = relatedIssueKey == null || relatedIssueKey.isBlank() ? "(none)" : relatedIssueKey.trim();
 		String corr = traceId == null || traceId.isBlank() ? "(none)" : traceId.trim();
 		String url = failurePageUrl == null ? "" : failurePageUrl.trim();
@@ -279,11 +280,15 @@ public class JiraService {
 				: failureTimestampUtc.trim();
 		String exact = exactError == null ? "" : exactError.trim();
 		String reason = failureReason == null ? "" : failureReason.trim();
+		String browse = storyBrowseUrl == null ? "" : storyBrowseUrl.trim();
 
 		StringBuilder sb = new StringBuilder();
 		sb.append("QA Sentinel — automated regression failure\n\n");
 		sb.append("Context\n\n");
-		sb.append("Source story / issue key: ").append(story).append("\n\n");
+		sb.append("Source user story / issue key: ").append(story).append("\n\n");
+		if (!browse.isEmpty()) {
+			sb.append("Open this story in Jira: ").append(browse).append("\n\n");
+		}
 		sb.append("Correlation ID (service logs): ").append(corr);
 
 		sb.append("\n\nSteps\n\n");
@@ -332,8 +337,10 @@ public class JiraService {
 				.append(" — view locally: npx playwright show-trace <file>\n");
 		sb.append("  • Browser console export (optional): ")
 				.append(artifactNameOrDefault(consoleLogHint, "dynamic-failure-console.log"));
-		sb.append("\n\n- Jira linkage: this bug is linked to ").append(story);
-		sb.append(" using the configured issue link type (see the Linked issues / issue links panel in Jira).");
+		sb.append("\n\n- Jira linkage: this bug is posted under / linked to user story ")
+				.append(story)
+				.append(" using the configured issue link type (see Linked work / Issue links on both the bug and the story in Jira).");
+		sb.append("\nA failure screenshot is attached to this bug when Playwright saved dynamic-failure.png.");
 		return sb.toString();
 	}
 

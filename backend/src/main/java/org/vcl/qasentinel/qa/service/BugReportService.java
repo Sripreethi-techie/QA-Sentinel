@@ -2,7 +2,6 @@ package org.vcl.qasentinel.qa.service;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -56,21 +55,17 @@ public class BugReportService {
 			return Optional.empty();
 		}
 		Path root = Path.of(playwrightProperties.getWorkingDir()).toAbsolutePath().normalize();
-		Path candidate = root.resolve(rel).normalize();
-		if (!candidate.startsWith(root)) {
-			return Optional.empty();
-		}
-		if (!Files.isRegularFile(candidate)) {
-			return Optional.empty();
-		}
-		return Optional.of(candidate);
+		return PlaywrightArtifactPathResolver.resolveExisting(root, rel);
 	}
 
 	private BugReportListItem toItem(QaRunSnapshot s) {
 		String key = s.jiraBugKey().trim();
 		String encoded = URLEncoder.encode(key, StandardCharsets.UTF_8);
 		String shotPath = s.screenshotPath() == null ? "" : s.screenshotPath().trim();
-		String shotUrl = shotPath.isEmpty() ? null : "/api/v1/bugs/" + encoded + "/screenshot";
+		Path root = Path.of(playwrightProperties.getWorkingDir()).toAbsolutePath().normalize();
+		String shotUrl = shotPath.isEmpty() || PlaywrightArtifactPathResolver.resolveExisting(root, shotPath).isEmpty()
+				? null
+				: "/api/v1/bugs/" + encoded + "/screenshot";
 		String reason = s.failureReason() == null ? "" : s.failureReason();
 		String title = buildTitle(s.issueKey(), key, reason);
 		return new BugReportListItem(
@@ -100,7 +95,7 @@ public class BugReportService {
 	}
 
 	private String buildJiraBrowseUrl(String jiraIssueKey) {
-		String base = jiraProperties.getBaseUrl();
+		String base = jiraProperties.getApiBaseUrl();
 		if (base == null || base.isBlank()) {
 			return "https://www.atlassian.com/software/jira?utm=demo&issue=" + urlSafeKey(jiraIssueKey);
 		}

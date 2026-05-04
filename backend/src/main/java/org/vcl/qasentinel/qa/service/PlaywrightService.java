@@ -283,7 +283,7 @@ public class PlaywrightService {
 	}
 
 	private static String defaultScreenshotPath() {
-		return "qa-runner/test-results/dynamic-failure.png";
+		return "test-results/dynamic-failure.png";
 	}
 
 	private RunOutcome enrichFailureOutcome(File workDir, RunOutcome base) {

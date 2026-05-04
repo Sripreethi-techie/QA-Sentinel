@@ -1,15 +1,21 @@
 package org.vcl.qasentinel.qa.service;
 
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import org.vcl.qasentinel.ai.JiraBugIdempotencyStore;
 import org.vcl.qasentinel.ai.QaRunHistoryStore;
 import org.vcl.qasentinel.config.QaFlowProperties;
 import org.vcl.qasentinel.jira.JiraConfigurationException;
@@ -38,6 +44,7 @@ public class QaOrchestratorService {
 	private final PlaywrightService playwrightService;
 	private final QaFlowProperties qaFlowProperties;
 	private final QaRunHistoryStore runHistory;
+	private final JiraBugIdempotencyStore jiraBugIdempotencyStore;
 	private final DemoLockedPlanLoader demoLockedPlanLoader;
 
 	/**
@@ -61,7 +68,13 @@ public class QaOrchestratorService {
 		}
 		String key = issueKey.trim().toUpperCase(Locale.ROOT);
 		String projectKey = deriveProjectKey(key);
-		String envBaseUrl = normalizeUrl(qaFlowProperties.getDefaultEnvBaseUrl());
+		String envBaseUrl;
+		try {
+			envBaseUrl = normalizeUrl(qaFlowProperties.getDefaultEnvBaseUrl());
+		}
+		catch (IllegalArgumentException e) {
+			return finish(key, new QaResult("ERROR", List.of(), e.getMessage(), "", traceId, ""));
+		}
 		if (qaFlowProperties.isDemoLockedMode()) {
 			log.info(DEMO_LOCKED_LOG);
 			String fixed = qaFlowProperties.getDemoLockedIssueKey();
@@ -153,15 +166,87 @@ public class QaOrchestratorService {
 		}
 		if (keys.isEmpty()) {
 			QaSentinelNarrative.line(log, "— No matching stories found for batch QA.");
-			return new QaBatchResult(pk, List.of());
+			return new QaBatchResult(
+					pk,
+					List.of(
+							new QaBatchItem(
+									"",
+									"ERROR",
+									"",
+									"No matching stories for batch QA (same JQL filters as the dashboard).")));
 		}
-		QaSentinelNarrative.line(log, "— Running QA for " + keys.size() + " story/stories…");
+		if (qaFlowProperties.isBatchDryRun()) {
+			QaSentinelNarrative.line(log, "— Batch dry run: listing " + keys.size() + " story key(s); QA not executed.");
+			List<QaBatchItem> dry = new ArrayList<>();
+			for (String sk : keys) {
+				dry.add(new QaBatchItem(sk, "DRY_RUN", "", "Dry run — Playwright and Jira bug filing skipped (qa.flow.batch-dry-run=true)."));
+			}
+			return new QaBatchResult(pk, dry);
+		}
+		int conc = Math.max(1, qaFlowProperties.getBatchConcurrency());
+		int delayMs = Math.max(0, qaFlowProperties.getBatchDelayMsBetweenStories());
+		QaSentinelNarrative.line(log, "— Running QA for " + keys.size() + " story/stories (concurrency=" + conc + ")…");
 		List<QaBatchItem> items = new ArrayList<>();
-		for (String storyKey : keys) {
-			log.info("Batch QA: {}", storyKey);
-			QaResult r = runQaFlow(storyKey);
-			String msg = r.failureReason() == null || r.failureReason().isBlank() ? r.status() : r.failureReason();
-			items.add(new QaBatchItem(storyKey, r.status(), r.jiraBugKey(), msg));
+		if (conc == 1) {
+			boolean first = true;
+			for (String storyKey : keys) {
+				if (!first && delayMs > 0) {
+					try {
+						Thread.sleep(delayMs);
+					}
+					catch (InterruptedException ie) {
+						Thread.currentThread().interrupt();
+					}
+				}
+				first = false;
+				log.info("Batch QA: {}", storyKey);
+				QaResult r = runQaFlow(storyKey);
+				String msg = r.failureReason() == null || r.failureReason().isBlank() ? r.status() : r.failureReason();
+				items.add(new QaBatchItem(storyKey, r.status(), r.jiraBugKey(), msg));
+			}
+		}
+		else {
+			if (delayMs > 0) {
+				log.info("Batch QA: batch-delay-ms-between-stories is ignored when batch-concurrency > 1.");
+			}
+			ExecutorService pool = Executors.newFixedThreadPool(conc);
+			try {
+				List<Future<QaBatchItem>> futures = new ArrayList<>();
+				for (String storyKey : keys) {
+					futures.add(
+							pool.submit(
+									() -> {
+										log.info("Batch QA: {}", storyKey);
+										QaResult r = runQaFlow(storyKey);
+										String msg =
+												r.failureReason() == null || r.failureReason().isBlank()
+														? r.status()
+														: r.failureReason();
+										return new QaBatchItem(storyKey, r.status(), r.jiraBugKey(), msg);
+									}));
+				}
+				for (Future<QaBatchItem> f : futures) {
+					try {
+						items.add(f.get());
+					}
+					catch (InterruptedException ie) {
+						Thread.currentThread().interrupt();
+						items.add(new QaBatchItem("", "ERROR", "", "Interrupted."));
+					}
+					catch (ExecutionException ee) {
+						Throwable c = ee.getCause();
+						items.add(
+								new QaBatchItem(
+										"",
+										"ERROR",
+										"",
+										c instanceof Exception ex ? safeMessage(ex) : safeMessage(ee)));
+					}
+				}
+			}
+			finally {
+				pool.shutdown();
+			}
 		}
 		QaSentinelNarrative.line(log, "— Batch QA finished for project " + pk + " (" + items.size() + " item(s)).");
 		return new QaBatchResult(pk, items);
@@ -170,9 +255,15 @@ public class QaOrchestratorService {
 	/** Full flow with explicit project, env, and optional PRD override (sync). */
 	public QaResult run(QaRequest request) {
 		String traceId = UUID.randomUUID().toString();
-		String envBaseUrl = normalizeUrl(request.envBaseUrl());
 		String projectKey = request.projectKey().trim().toUpperCase(Locale.ROOT);
 		String issueKey = request.issueKey().trim().toUpperCase(Locale.ROOT);
+		String envBaseUrl;
+		try {
+			envBaseUrl = normalizeUrl(request.envBaseUrl());
+		}
+		catch (IllegalArgumentException e) {
+			return finish(issueKey, new QaResult("ERROR", List.of(), e.getMessage(), "", traceId, ""));
+		}
 		if (qaFlowProperties.isDemoLockedMode()) {
 			log.info(DEMO_LOCKED_LOG);
 			String fixed = qaFlowProperties.getDemoLockedIssueKey();
@@ -651,10 +742,16 @@ public class QaOrchestratorService {
 			List<TestStep> steps,
 			PlaywrightService.RunOutcome outcome,
 			TestStep failedStep) {
+		String idKey = JiraBugIdempotencyStore.computeIdempotencyKey(issueKey, traceId, outcome, failedStep);
+		Optional<String> existing = jiraBugIdempotencyStore.findExistingBugKey(idKey);
+		if (existing.isPresent()) {
+			log.info("Jira bug idempotency: reusing {} (same failure fingerprint as prior filing)", existing.get());
+			return existing.get();
+		}
 		String failureReason = outcome.message() == null ? "" : outcome.message();
 		String screenshotHint = outcome.screenshotPath() == null ? "" : outcome.screenshotPath();
 		String failurePageUrl = outcome.failurePageUrl() == null ? "" : outcome.failurePageUrl();
-		return jiraService.fileQaSentinelPlaywrightBug(
+		String created = jiraService.fileQaSentinelPlaywrightBug(
 				projectKey,
 				issueKey,
 				traceId,
@@ -667,6 +764,10 @@ public class QaOrchestratorService {
 				outcome.failureTimestampUtc(),
 				outcome.tracePathHint(),
 				outcome.consoleLogPathHint());
+		if (created != null && !created.isBlank()) {
+			jiraBugIdempotencyStore.remember(idKey, created);
+		}
+		return created;
 	}
 
 	/**
@@ -735,7 +836,54 @@ public class QaOrchestratorService {
 		if (url == null || url.isBlank()) {
 			return QaFlowProperties.DEFAULT_DEMO_TARGET_URL;
 		}
-		return url.trim();
+		String n = url.trim();
+		assertEnvUrlAllowed(n);
+		return n;
+	}
+
+	private void assertEnvUrlAllowed(String url) {
+		if (qaFlowProperties.isAllowPrivateEnvUrls()) {
+			return;
+		}
+		URI uri;
+		try {
+			uri = URI.create(url);
+		}
+		catch (IllegalArgumentException e) {
+			throw new IllegalArgumentException("Invalid target URL: " + url, e);
+		}
+		String host = uri.getHost();
+		if (host == null) {
+			return;
+		}
+		String h = host.toLowerCase(Locale.ROOT);
+		if ("localhost".equals(h) || h.endsWith(".localhost")) {
+			return;
+		}
+		if ("127.0.0.1".equals(h) || "::1".equals(h)) {
+			return;
+		}
+		if (h.startsWith("10.")) {
+			throw new IllegalArgumentException("Target URL uses a private host (" + host + "). Set qa.flow.allow-private-env-urls=true to allow.");
+		}
+		if (h.startsWith("192.168.")) {
+			throw new IllegalArgumentException("Target URL uses a private host (" + host + "). Set qa.flow.allow-private-env-urls=true to allow.");
+		}
+		if (h.startsWith("172.")) {
+			String[] oct = h.split("\\.");
+			if (oct.length >= 2) {
+				try {
+					int second = Integer.parseInt(oct[1]);
+					if (second >= 16 && second <= 31) {
+						throw new IllegalArgumentException(
+								"Target URL uses a private host (" + host + "). Set qa.flow.allow-private-env-urls=true to allow.");
+					}
+				}
+				catch (NumberFormatException ignored) {
+					// ignore
+				}
+			}
+		}
 	}
 
 	private static String safeMessage(Throwable e) {

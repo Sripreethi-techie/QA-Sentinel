@@ -10,6 +10,7 @@ import org.vcl.qasentinel.config.GroqProperties;
 import org.vcl.qasentinel.config.JiraProperties;
 import org.vcl.qasentinel.config.PlaywrightProperties;
 import org.vcl.qasentinel.config.QaFlowProperties;
+import org.vcl.qasentinel.config.QaSentinelProperties;
 
 @SpringBootApplication
 @EnableConfigurationProperties({
@@ -19,6 +20,7 @@ import org.vcl.qasentinel.config.QaFlowProperties;
 		GroqProperties.class,
 		PlaywrightProperties.class,
 		QaFlowProperties.class,
+		QaSentinelProperties.class,
 })
 public class QaSentinelApplication {
 

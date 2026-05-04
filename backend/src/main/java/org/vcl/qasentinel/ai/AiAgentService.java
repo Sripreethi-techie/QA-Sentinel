@@ -21,6 +21,8 @@ import org.vcl.qasentinel.jira.JiraIssueView;
 import org.vcl.qasentinel.jira.JiraSearchClient;
 import org.vcl.qasentinel.loan.model.LoanApplication;
 import org.vcl.qasentinel.loan.service.LoanService;
+import org.vcl.qasentinel.qa.model.BugReportListItem;
+import org.vcl.qasentinel.qa.service.BugReportService;
 import org.vcl.qasentinel.qa.service.GroqReasoningService;
 
 @Service
@@ -39,6 +41,7 @@ public class AiAgentService {
 	private final GroqReasoningService groqReasoningService;
 	private final AiAgentProperties aiAgentProperties;
 	private final LoanService loanService;
+	private final BugReportService bugReportService;
 
 	public AiAskResponse ask(String question) {
 		String q = question == null ? "" : question.trim();
@@ -71,7 +74,7 @@ public class AiAgentService {
 
 		String issuesBlock = formatIssues(issuesByKey.values().stream().toList());
 		String resultsBlock = formatRuns(snapshots);
-		String bugsBlock = formatBugs(snapshots);
+		String bugsBlock = formatBugReports(bugReportService.listBugReports());
 		String loansBlock = formatLoans(loanService.allStored());
 
 		int cap = Math.max(1000, aiAgentProperties.getMaxContextChars());
@@ -132,7 +135,7 @@ public class AiAgentService {
 
 	private static String formatRuns(List<QaRunSnapshot> snapshots) {
 		if (snapshots.isEmpty()) {
-			return "(none — no QA runs recorded in this JVM yet; trigger POST /api/v1/qa/flow/{issueKey})";
+			return "(none — no QA runs in server history yet; run a flow from the UI or POST /api/v1/qa/flow/{issueKey}; with persistence enabled, history survives restarts)";
 		}
 		List<String> lines = new ArrayList<>();
 		for (QaRunSnapshot s : snapshots) {
@@ -176,26 +179,44 @@ public class AiAgentService {
 				.collect(Collectors.joining("\n"));
 	}
 
-	private static String formatBugs(List<QaRunSnapshot> snapshots) {
-		List<String> lines = new ArrayList<>();
-		for (QaRunSnapshot s : snapshots) {
-			if (s.jiraBugKey() == null || s.jiraBugKey().isBlank()) {
-				continue;
-			}
-			lines.add(
-					"- bugKey="
-							+ s.jiraBugKey()
-							+ " | linkedIssue="
-							+ s.issueKey()
-							+ " | runStatus="
-							+ s.status()
-							+ " | at="
-							+ s.at());
+	private static String formatBugReports(List<BugReportListItem> bugs) {
+		if (bugs == null || bugs.isEmpty()) {
+			return "(none — no QA-filed bugs in server bug list; failures that created Jira issues appear here after runs)";
 		}
-		if (lines.isEmpty()) {
-			return "(none — no bug keys recorded on recent runs)";
+		return bugs.stream()
+				.map(
+						b -> "- jiraKey="
+								+ nullSafe(b.jiraKey())
+								+ " | linkedStory="
+								+ nullSafe(b.linkedIssueKey())
+								+ " | title="
+								+ oneLine(nullSafe(b.title()), 200)
+								+ " | runStatus="
+								+ nullSafe(b.runStatus())
+								+ " | trace="
+								+ nullSafe(b.traceId())
+								+ " | failure="
+								+ oneLine(nullSafe(b.failureReason()), 400)
+								+ " | failedStep="
+								+ oneLine(nullSafe(b.failedStepSummary()), 200)
+								+ (b.screenshotUrl() != null && !b.screenshotUrl().isBlank()
+										? " | screenshotUrl=" + b.screenshotUrl().trim()
+										: "")
+								+ " | recordedAt="
+								+ nullSafe(b.recordedAt()))
+				.collect(Collectors.joining("\n"));
+	}
+
+	private static String nullSafe(String s) {
+		return s == null ? "" : s.trim();
+	}
+
+	private static String oneLine(String s, int max) {
+		String t = s.replace('\r', ' ').replace('\n', ' ').trim();
+		if (t.length() <= max) {
+			return t;
 		}
-		return String.join("\n", lines);
+		return t.substring(0, Math.max(0, max - 1)) + "…";
 	}
 
 	private static String deriveProjectFromIssue(String issueKey) {
@@ -213,12 +234,12 @@ public class AiAgentService {
 	private static String buildOfflineAnswer(
 			String question, List<QaRunSnapshot> snapshots, int issueCount) {
 		String ql = question.toLowerCase(Locale.ROOT);
-		QaRunSnapshot last = snapshots.isEmpty() ? null : snapshots.getFirst();
+		QaRunSnapshot last = snapshots.isEmpty() ? null : snapshots.get(0);
 		StringBuilder sb = new StringBuilder();
 		sb.append("Groq returned no answer (API key missing, error, or empty completion). ");
 		sb.append("Here is a quick local summary from recorded runs in this server:\n\n");
 		if (last == null) {
-			sb.append("- No QA runs are stored yet in this JVM session.\n");
+			sb.append("- No QA runs are stored in server history yet.\n");
 		}
 		else {
 			sb.append("- Last run: issue ")
@@ -240,7 +261,7 @@ public class AiAgentService {
 			}
 		}
 		sb.append("- Jira issues loaded into context: ").append(issueCount).append(" keys.\n");
-		sb.append("\nSet `groq.api-key` (and optional `groq.model`) for full LLM answers.");
+		sb.append("\nSet GROQ_API_TOKEN or `groq.api-key` (and optional `groq.model`) for full LLM answers.");
 		return sb.toString();
 	}
 }

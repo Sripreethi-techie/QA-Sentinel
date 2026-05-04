@@ -5,10 +5,15 @@ import {
   useEffect,
   useMemo,
   useState,
+  type Dispatch,
   type ReactNode,
+  type SetStateAction,
 } from "react";
 import { runQaFlow, runQaFlowAllStories } from "../api/qaApi";
 import type { BugReportItem, QaBatchItem, QaStatus, SentinelRun } from "../types/qa";
+
+/** Header ticket control: run all stories in the Jira project (batch). */
+export const TICKET_ALL = "__ALL__";
 
 const STORAGE_RUNS = "qa-sentinel-runs-v1";
 const STORAGE_BUGS = "qa-sentinel-bugs-v1";
@@ -35,15 +40,21 @@ interface SentinelContextValue {
   setProjectKey: (k: string) => void;
   issueKey: string;
   setIssueKey: (k: string) => void;
+  /** Header: {@link TICKET_ALL} runs batch QA; otherwise a Jira story key for single-story QA. */
+  ticketSelection: string;
+  setTicketSelection: Dispatch<SetStateAction<string>>;
   runs: SentinelRun[];
   bugs: BugReportItem[];
   issueQaMap: Record<string, QaStatus | "—">;
   issueBugLink: Record<string, string>;
   health: HealthState;
   refreshHealth: () => Promise<void>;
-  runQa: () => Promise<void>;
+  /** Single-story QA (optional override key for one-shot runs). */
+  runQa: (issueKeyOverride?: string) => Promise<void>;
   /** Runs QA for every story in the current Jira project (batch endpoint). */
   runQaAllStories: () => Promise<void>;
+  /** Uses {@link ticketSelection}: batch when {@link TICKET_ALL}, else single story. */
+  runAgent: () => Promise<void>;
   running: boolean;
   lastError: string | null;
   metrics: {
@@ -59,6 +70,7 @@ const SentinelContext = createContext<SentinelContextValue | null>(null);
 export function SentinelProvider({ children }: { children: ReactNode }) {
   const [projectKey, setProjectKey] = useState("SCRUM");
   const [issueKey, setIssueKey] = useState("SCRUM-1");
+  const [ticketSelection, setTicketSelection] = useState(TICKET_ALL);
   const [runs, setRuns] = useState<SentinelRun[]>(() => loadJson(STORAGE_RUNS, []));
   const [bugs, setBugs] = useState<BugReportItem[]>(() => loadJson(STORAGE_BUGS, []));
   const [issueQaMap, setIssueQaMap] = useState<Record<string, QaStatus | "—">>(() =>
@@ -90,8 +102,11 @@ export function SentinelProvider({ children }: { children: ReactNode }) {
     );
   };
 
-  const runQa = useCallback(async () => {
-    const key = issueKey.trim() || `${projectKey}-1`;
+  const runQa = useCallback(async (issueKeyOverride?: string) => {
+    const key = (issueKeyOverride ?? issueKey).trim() || `${projectKey}-1`;
+    if (issueKeyOverride != null && issueKeyOverride.trim()) {
+      setIssueKey(issueKeyOverride.trim());
+    }
     setLastError(null);
     setRunning(true);
     const runId = id();
@@ -344,6 +359,14 @@ export function SentinelProvider({ children }: { children: ReactNode }) {
     }
   }, [projectKey, refreshHealth]);
 
+  const runAgent = useCallback(async () => {
+    if (ticketSelection === TICKET_ALL) {
+      await runQaAllStories();
+    } else {
+      await runQa(ticketSelection);
+    }
+  }, [ticketSelection, runQa, runQaAllStories]);
+
   const metrics = useMemo(() => {
     const done = runs.filter((r) => r.status !== "RUNNING" && r.status !== "PENDING");
     const failures = done.filter((r) => r.status === "FAIL" || r.status === "ERROR").length;
@@ -368,6 +391,8 @@ export function SentinelProvider({ children }: { children: ReactNode }) {
     setProjectKey,
     issueKey,
     setIssueKey,
+    ticketSelection,
+    setTicketSelection,
     runs,
     bugs,
     issueQaMap,
@@ -376,6 +401,7 @@ export function SentinelProvider({ children }: { children: ReactNode }) {
     refreshHealth,
     runQa,
     runQaAllStories,
+    runAgent,
     running,
     lastError,
     metrics,

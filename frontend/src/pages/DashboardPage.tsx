@@ -1,9 +1,10 @@
 import { Activity, Bug, ListChecks, Timer } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { fetchBugReports } from "../api/qaApi";
 import { KpiCard } from "../components/KpiCard";
 import { StatusBadge } from "../components/StatusBadge";
 import { useSentinel } from "../context/SentinelContext";
-import type { JiraIssueRow } from "../types/qa";
+import type { ApiBugReport, BugReportItem, JiraIssueRow } from "../types/qa";
 
 /** Matches {@link org.vcl.qasentinel.jira.JiraIssueView} JSON from Spring. */
 interface JiraStoryApi {
@@ -31,9 +32,26 @@ function mapStoryToRow(i: JiraStoryApi): JiraIssueRow {
   };
 }
 
+/** Distinct Jira bug keys linked to a story (local session + server run history). */
+function distinctBugCountForStory(storyKey: string, localBugs: BugReportItem[], apiBugs: ApiBugReport[]): number {
+  const jiraKeys = new Set<string>();
+  for (const b of localBugs) {
+    if (b.linkedIssue !== storyKey) continue;
+    const m = /^bug-(.+)$/.exec(b.id);
+    jiraKeys.add(m ? m[1].trim() : b.id.trim());
+  }
+  for (const b of apiBugs) {
+    if (b.linkedIssueKey !== storyKey) continue;
+    const k = b.jiraKey?.trim();
+    if (k) jiraKeys.add(k);
+  }
+  return jiraKeys.size;
+}
+
 export function DashboardPage() {
-  const { metrics, issueQaMap, issueBugLink, runs, running, projectKey } = useSentinel();
+  const { metrics, bugs: localBugs, runs, running, projectKey } = useSentinel();
   const [baseRows, setBaseRows] = useState<JiraIssueRow[]>([]);
+  const [apiBugs, setApiBugs] = useState<ApiBugReport[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -41,6 +59,7 @@ export function DashboardPage() {
     const pk = projectKey.trim();
     if (!pk) {
       setBaseRows([]);
+      setApiBugs([]);
       setLoadError("Select a project in the header.");
       setLoading(false);
       return;
@@ -48,15 +67,19 @@ export function DashboardPage() {
     setLoading(true);
     setLoadError(null);
     try {
-      const r = await fetch(`/api/v1/jira/projects/${encodeURIComponent(pk)}/stories`, {
-        headers: { Accept: "application/json" },
-      });
-      if (!r.ok) {
-        setLoadError(`Could not reach the QA API (HTTP ${r.status}). Is the backend running on port 9096?`);
+      const [storiesRes, bugsData] = await Promise.all([
+        fetch(`/api/v1/jira/projects/${encodeURIComponent(pk)}/stories`, {
+          headers: { Accept: "application/json" },
+        }),
+        fetchBugReports().catch(() => [] as ApiBugReport[]),
+      ]);
+      setApiBugs(Array.isArray(bugsData) ? bugsData : []);
+      if (!storiesRes.ok) {
+        setLoadError(`Could not reach the QA API (HTTP ${storiesRes.status}). Is the backend running on port 9096?`);
         setBaseRows([]);
         return;
       }
-      const data = (await r.json()) as JiraStoriesPayload | JiraStoryApi[];
+      const data = (await storiesRes.json()) as JiraStoriesPayload | JiraStoryApi[];
       if (Array.isArray(data)) {
         setLoadError(null);
         setBaseRows(data.map(mapStoryToRow));
@@ -64,14 +87,19 @@ export function DashboardPage() {
       }
       const items = (data.items ?? []).map(mapStoryToRow);
       setBaseRows(items);
-      if (data.error && data.error.trim()) {
-        setLoadError(data.error.trim());
+      const serverErr = typeof data === "object" && !Array.isArray(data) && data.error?.trim() ? data.error.trim() : "";
+      if (items.length === 0) {
+        setLoadError(
+          serverErr ||
+            "No stories were returned. Check qa.flow.batch-story-issue-type-name / batch JQL, or GET /api/v1/jira/projects/{key}/issue-types for valid issue type names.",
+        );
       } else {
-        setLoadError(null);
+        setLoadError(serverErr || null);
       }
     } catch {
       setLoadError("Network error while loading Jira stories.");
       setBaseRows([]);
+      setApiBugs([]);
     } finally {
       setLoading(false);
     }
@@ -82,12 +110,12 @@ export function DashboardPage() {
   }, [loadStories]);
 
   const tableRows = useMemo(() => {
-    return baseRows.map((r) => ({
-      ...r,
-      qaResult: issueQaMap[r.key] ?? ("—" as const),
-      bugLink: issueBugLink[r.key] ?? "",
-    }));
-  }, [baseRows, issueQaMap, issueBugLink]);
+    return baseRows.map((r) => {
+      const bugCount = distinctBugCountForStory(r.key, localBugs, apiBugs);
+      const qaLabel = bugCount >= 1 ? "fail" : "pass";
+      return { ...r, bugCount, qaResult: qaLabel };
+    });
+  }, [baseRows, localBugs, apiBugs]);
 
   const lastStatus = runs[0]?.status === "RUNNING" ? "RUNNING" : metrics.lastRunStatus;
 
@@ -127,7 +155,7 @@ export function DashboardPage() {
         <KpiCard
           title="Last run status"
           value={lastStatus === "—" ? "—" : running ? "…" : String(lastStatus)}
-          hint={runs[0]?.issueKey ? `Issue ${runs[0].issueKey}` : "No runs yet"}
+          hint={runs[0]?.issueKey ? `Ticket ${runs[0].issueKey}` : "No runs yet"}
           icon={Timer}
           accent="emerald"
         />
@@ -138,8 +166,13 @@ export function DashboardPage() {
           <h2 className="text-sm font-semibold text-slate-900 dark:text-white">User stories</h2>
           <p className="text-xs text-slate-500 dark:text-slate-400">
             Live Jira issues for project <span className="font-mono text-slate-600 dark:text-slate-300">{projectKey}</span>{" "}
-            (issue type and filters match <span className="font-mono">qa.flow.batch-*</span> in the backend). QA result
-            columns reflect Sentinel runs in this browser.
+            (issue type and filters match <span className="font-mono">qa.flow.batch-*</span> in the backend).{" "}
+            <span className="font-medium text-slate-600 dark:text-slate-300">QA result</span> is{" "}
+            <span className="font-mono">pass</span> when no bugs are linked to the story, <span className="font-mono">fail</span>{" "}
+            when one or more QA-filed bugs are linked. Bug counts merge this browser session with the server bug list. A story
+            only gets bugs after Playwright QA fails for that issue; use header <span className="font-semibold">Run Agent</span> to
+            execute QA for every story in the project (failures create
+            Jira bugs with screenshots when the runner saves them).
           </p>
         </div>
         {loadError ? (
@@ -151,11 +184,11 @@ export function DashboardPage() {
           <table className="w-full min-w-[640px] text-left text-sm">
             <thead>
               <tr className="border-b border-slate-100 bg-slate-50/80 text-xs font-medium uppercase tracking-wide text-slate-500 dark:border-slate-800 dark:bg-slate-950/80 dark:text-slate-400">
-                <th className="px-4 py-3">Jira issue</th>
+                <th className="px-4 py-3">Jira ID</th>
                 <th className="px-4 py-3">Summary</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">QA result</th>
-                <th className="px-4 py-3">Bug लिंक</th>
+                <th className="px-4 py-3">Bugs</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -168,10 +201,19 @@ export function DashboardPage() {
               ) : tableRows.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="px-4 py-8 text-center text-slate-500">
-                    No Jira issues found for this project (after story-type filter and fallback). Check the project key,
-                    Jira credentials, and{" "}
-                    <span className="font-mono">qa.flow.batch-story-issue-type-name</span> (e.g. Story or User Story) or{" "}
-                    <span className="font-mono">qa.flow.batch-jql-suffix</span> in the backend.
+                    <div className="mx-auto max-w-xl space-y-2 text-sm">
+                      {loadError ? (
+                        <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-left text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-100">
+                          {loadError}
+                        </p>
+                      ) : null}
+                      <p>
+                        No Jira issues found for this project (after story-type filter and fallback). Check the project key,
+                        Jira credentials, and{" "}
+                        <span className="font-mono">qa.flow.batch-story-issue-type-name</span> or{" "}
+                        <span className="font-mono">qa.flow.batch-jql-suffix</span> in the backend.
+                      </p>
+                    </div>
                   </td>
                 </tr>
               ) : (
@@ -192,23 +234,10 @@ export function DashboardPage() {
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      {row.qaResult === "—" ? (
-                        <StatusBadge label="—" />
-                      ) : (
-                        <StatusBadge label={row.qaResult} />
-                      )}
+                      <StatusBadge label={row.qaResult} />
                     </td>
-                    <td className="px-4 py-3">
-                      {row.bugLink ? (
-                        <a
-                          href={`#bug-${row.bugLink}`}
-                          className="font-mono text-xs text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
-                        >
-                          {row.bugLink}
-                        </a>
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
+                    <td className="px-4 py-3 tabular-nums text-slate-700 dark:text-slate-200">
+                      {row.bugCount ?? 0}
                     </td>
                   </tr>
                 ))

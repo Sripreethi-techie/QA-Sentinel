@@ -1,90 +1,88 @@
+import { writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { test, expect } from "@playwright/test";
+import {
+  assertValidation,
+  validateInvalidApplyRejected,
+  validateLoanListEnvelope,
+  validateListReflectsSubmission,
+  validateLoanListEmailColumnShape,
+} from "./loan-api-validation.js";
+import { DEMO_LOAN_PAGE, LOAN_ORIGIN, RESULT_DIR } from "./loan-test-env.js";
 
 /**
- * Targets the demo loan UI + Spring API (Vite proxies /api to backend).
- * @see RUNBOOK.md at repo root
+ * @param {import("@playwright/test").Page} page
+ * @param {import("@playwright/test").TestInfo} testInfo
+ * @param {string} fileName
  */
-function loanOrigin() {
-  const raw =
-    process.env.LOAN_ORIGIN?.trim() || process.env.DEMO_LOAN_BASE_URL?.trim() || process.env.TARGET_URL?.trim() || "";
-  if (!raw) return "http://localhost:9096";
-  try {
-    const u = new URL(/^https?:\/\//i.test(raw) ? raw : `http://${raw}`);
-    const p = u.pathname.replace(/\/$/, "") || "/";
-    if (p.endsWith("/loan")) u.pathname = "/";
-    return u.origin;
-  } catch {
-    return "http://localhost:9096";
-  }
+async function captureStep(page, testInfo, fileName) {
+  mkdirSync(RESULT_DIR, { recursive: true });
+  const buf = await page.screenshot({ fullPage: true });
+  writeFileSync(join(RESULT_DIR, fileName), buf);
+  await testInfo.attach(fileName, { body: buf, contentType: "image/png" });
 }
-const LOAN_ORIGIN = loanOrigin();
-const LOAN_PAGE = `${LOAN_ORIGIN}/loan`;
 
-test.describe.configure({ mode: "serial" });
+test.describe("demo loan application (assertions surface known bugs)", () => {
+  test("invalid form: client error must be readable (fails: broken error banner opacity)", async ({
+    page,
+  }, testInfo) => {
+    await page.goto(`${DEMO_LOAN_PAGE}/`, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    await captureStep(page, testInfo, "loan-ui-01-nav.png");
 
-test.describe("demo-loan-app (intentional bugs for QA)", () => {
-  test("POST /api/loan/apply succeeds with empty body (API bug)", async ({ request }) => {
-    const res = await request.post(`${LOAN_ORIGIN}/api/loan/apply`, {
-      data: { name: "", email: "", loanAmount: "" },
-    });
-    expect(res.ok()).toBeTruthy();
-    const json = await res.json();
-    expect(json.success).toBe(true);
-  });
-
-  test("GET /api/loan/list returns swapped name/email (API bug)", async ({ request }) => {
-    const suffix = Date.now();
-    const email = `loan-pw-${suffix}@test.com`;
-    await request.post(`${LOAN_ORIGIN}/api/loan/apply`, {
-      data: { name: "PlaywrightAlice", email, loanAmount: "12000" },
-    });
-    const res = await request.get(`${LOAN_ORIGIN}/api/loan/list`);
-    expect(res.ok()).toBeTruthy();
-    const { applications } = await res.json();
-    const row = applications.find((a) => a.name === email);
-    expect(row, "expected swapped mapping: name field carries email value").toBeTruthy();
-    expect(row.email).toBe("PlaywrightAlice");
-    expect(row.loanAmount).toBe("1200000");
-  });
-
-  test("UI: empty submit still shows success (relies on API bug)", async ({ page }) => {
-    await page.goto(`${LOAN_PAGE}/`);
-    await page.getByTestId("submit-loan").click();
-    await expect(page.getByTestId("submit-toast")).toContainText("Application received");
-  });
-
-  test("UI: fill form, list shows wrong columns vs entered values", async ({ page }) => {
-    await page.goto(`${LOAN_PAGE}/`);
-    await page.getByLabel(/Full name/i).fill("Bob Tester");
-    await page.getByLabel(/Email/i).fill("bob-ui@example.com");
-    await page.getByLabel(/Loan amount/i).fill("7500");
-    await page.getByTestId("submit-loan").click();
-    await page.waitForURL("**/loan-list");
-    await expect(page.getByTestId("loan-table")).toBeVisible();
-    const row = page.getByTestId("loan-row").filter({ hasText: "bob-ui@example.com" }).first();
-    await expect(row).toBeVisible();
-    await expect(row.getByTestId("cell-name")).toContainText("bob-ui@example.com");
-    await expect(row.getByTestId("cell-email")).toContainText("Bob Tester");
-  });
-
-  test("UI: validation error is not visible (broken error styles)", async ({ page }) => {
-    await page.goto(`${LOAN_PAGE}/`);
     await page.getByLabel(/Full name/i).fill("x");
     await page.getByLabel(/Email/i).fill("not-an-email");
     await page.getByLabel(/Loan amount/i).fill("-1");
+    await captureStep(page, testInfo, "loan-ui-02-filled-invalid.png");
+
     await page.getByTestId("submit-loan").click();
+    await page.locator(".error-banner--broken").waitFor({ state: "attached", timeout: 15_000 });
+    await captureStep(page, testInfo, "loan-ui-03-after-submit.png");
+
     const banner = page.locator(".error-banner--broken");
-    await expect(banner).toBeAttached();
     const opacity = await banner.evaluate((el) => parseFloat(getComputedStyle(el).opacity));
-    expect(opacity).toBeLessThan(0.1);
+    expect(opacity, "error banner should be clearly visible").toBeGreaterThan(0.85);
+    await expect(banner).toBeVisible();
   });
 
-  test("UI: submit button partially off-screen on narrow viewport", async ({ page }) => {
-    await page.setViewportSize({ width: 360, height: 640 });
-    await page.goto(`${LOAN_PAGE}/`);
-    const box = await page.getByTestId("submit-loan").boundingBox();
-    expect(box).toBeTruthy();
-    const vw = page.viewportSize()?.width ?? 360;
-    expect(box.x + box.width).toBeGreaterThan(vw * 0.85);
+  test("API: invalid apply payload must be rejected (fails: always 200 + success)", async ({ request }) => {
+    const res = await request.post(`${LOAN_ORIGIN}/api/loan/apply`, {
+      data: { name: "", email: "bad", loanAmount: "0" },
+    });
+    const json = await res.json();
+    assertValidation(validateInvalidApplyRejected(res.status(), json), "POST /api/loan/apply invalid");
+  });
+
+  test("API: list must reflect submission and use well-formed emails (fails: swap + amount)", async ({
+    request,
+  }) => {
+    const suffix = Date.now();
+    const submitted = {
+      name: `APIVal ${suffix}`,
+      email: `apival-${suffix}@example.com`,
+      loanAmount: "8800",
+    };
+    const applyRes = await request.post(`${LOAN_ORIGIN}/api/loan/apply`, {
+      data: submitted,
+    });
+    expect(applyRes.ok()).toBeTruthy();
+    const applyJson = await applyRes.json();
+    const id = /** @type {{ id?: string }} */ (applyJson).id;
+    expect(id, "apply response should include id").toBeTruthy();
+
+    const listRes = await request.get(`${LOAN_ORIGIN}/api/loan/list`);
+    expect(listRes.ok()).toBeTruthy();
+    const listJson = await listRes.json();
+    assertValidation(validateLoanListEnvelope(listJson), "GET /api/loan/list envelope");
+    const { applications } = /** @type {{ applications: unknown[] }} */ (listJson);
+    const appId = /** @type {string} */ (id);
+    const shape = validateLoanListEmailColumnShape(applications, appId);
+    const match = validateListReflectsSubmission(applications, submitted, appId);
+    assertValidation(
+      {
+        ok: shape.ok && match.ok,
+        errors: [...shape.errors, ...match.errors],
+      },
+      "GET /api/loan/list semantics (shape + fidelity)",
+    );
   });
 });

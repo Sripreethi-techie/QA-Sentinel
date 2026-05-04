@@ -16,6 +16,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.client.MultipartBodyBuilder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -36,7 +37,8 @@ public class JiraBugService {
 	/**
 	 * Creates a Jira issue of type {@link JiraProperties#getBugIssueTypeName()} with plain-text description (ADF),
 	 * verifies the created issue type, uploads all provided attachment files that exist on disk, and links the bug to
-	 * {@code relatedStoryKey} using {@link JiraProperties#getBugLinkTypeName()}.
+	 * {@code relatedStoryKey} using {@link JiraProperties#getBugLinkTypeName()}. When {@link JiraProperties#isBugParentStoryEnabled()}
+	 * is true, also sets {@code parent} to the story so the bug can appear nested under it in supported Jira views.
 	 *
 	 * @throws JiraConfigurationException if Jira is not enabled or credentials are missing
 	 * @throws IllegalStateException if the story key is blank, create/verify/link/attach fails, or issuetype does not match
@@ -53,7 +55,7 @@ public class JiraBugService {
 		if (relatedStoryKey == null || relatedStoryKey.isBlank()) {
 			throw new IllegalStateException("Original Jira story key is required to file QA Sentinel bugs.");
 		}
-		String base = jiraProperties.getBaseUrl().trim().replaceAll("/+$", "");
+		String base = jiraProperties.getApiBaseUrl().trim().replaceAll("/+$", "");
 		String sum = summary == null ? "" : summary.trim();
 		if (sum.isEmpty()) {
 			sum = "QA Sentinel bug";
@@ -69,26 +71,14 @@ public class JiraBugService {
 				? "Bug"
 				: jiraProperties.getBugIssueTypeName().trim();
 
-		Map<String, Object> fields = new LinkedHashMap<>();
-		fields.put("project", Map.of("key", projectKey));
-		fields.put("summary", sum);
-		fields.put("issuetype", Map.of("name", issueType));
-		fields.put("description", simpleAdfFromPlainText(desc));
-		if (assigneeAccountId != null && !assigneeAccountId.isBlank()) {
-			fields.put("assignee", Map.of("id", assigneeAccountId.trim()));
-		}
-		Map<String, Object> payload = Map.of("fields", fields);
-
 		RestClient client = jiraRestClient(base);
 		try {
-			String json = objectMapper.writeValueAsString(payload);
-			String response = client.post()
-					.uri("/rest/api/3/issue")
-					.contentType(MediaType.APPLICATION_JSON)
-					.body(json)
-					.retrieve()
-					.body(String.class);
-			String key = objectMapper.readTree(response).path("key").asText("");
+			boolean wantParent = jiraProperties.isBugParentStoryEnabled();
+			String responseBody = tryCreateIssueReturnBody(client, projectKey, sum, desc, issueType, relatedStoryKey, assigneeAccountId, wantParent);
+			if (wantParent) {
+				QaSentinelNarrative.line(log, "→ Jira parent set to story " + relatedStoryKey.trim() + " (jira.bug-parent-story-enabled=true)");
+			}
+			String key = objectMapper.readTree(responseBody).path("key").asText("");
 			if (key.isEmpty()) {
 				throw new IllegalStateException("Jira create returned empty issue key");
 			}
@@ -100,12 +90,96 @@ public class JiraBugService {
 
 			return key;
 		}
+		catch (RestClientResponseException first) {
+			if (jiraProperties.isBugParentStoryEnabled()
+					&& first.getStatusCode().value() == 400
+					&& isParentHierarchyRejected(first.getResponseBodyAsString())) {
+				log.warn(
+						"Jira rejected parent field for story {} ({}). Retrying create without parent; link-only via {}.",
+						relatedStoryKey.trim(),
+						abbreviateJiraError(first.getResponseBodyAsString()),
+						jiraProperties.getBugLinkTypeName());
+				QaSentinelNarrative.line(
+						log,
+						"→ Jira parent rejected by hierarchy; retrying bug create link-only (set jira.bug-parent-story-enabled=false to skip parent on first try)");
+				try {
+					String responseBody =
+							tryCreateIssueReturnBody(client, projectKey, sum, desc, issueType, relatedStoryKey, assigneeAccountId, false);
+					String key = objectMapper.readTree(responseBody).path("key").asText("");
+					if (key.isEmpty()) {
+						throw new IllegalStateException("Jira create returned empty issue key");
+					}
+					QaSentinelNarrative.line(log, "→ Jira " + issueType + " created: " + key);
+					verifyCreatedIssueType(client, key, issueType);
+					uploadAttachmentsMandatory(client, key, attachmentPaths);
+					linkBugToStoryMandatory(client, key, relatedStoryKey.trim());
+					return key;
+				}
+				catch (Exception e) {
+					throw new IllegalStateException("Jira bug create failed after parent fallback: " + e.getMessage(), e);
+				}
+			}
+			throw new IllegalStateException(
+					"Jira bug create failed: HTTP "
+							+ first.getStatusCode().value()
+							+ " "
+							+ abbreviateJiraError(first.getResponseBodyAsString()),
+					first);
+		}
 		catch (RuntimeException e) {
 			throw e;
 		}
 		catch (Exception e) {
 			throw new IllegalStateException("Jira bug create failed: " + e.getMessage(), e);
 		}
+	}
+
+	private static boolean isParentHierarchyRejected(String responseBody) {
+		if (responseBody == null || responseBody.isBlank()) {
+			return false;
+		}
+		String b = responseBody.toLowerCase();
+		return b.contains("parentid")
+				&& (b.contains("hierarchy") || b.contains("appropriate") || b.contains("does not belong"));
+	}
+
+	private static String abbreviateJiraError(String body) {
+		if (body == null) {
+			return "";
+		}
+		String t = body.replace('\r', ' ').replace('\n', ' ').trim();
+		return t.length() > 800 ? t.substring(0, 797) + "…" : t;
+	}
+
+	private String tryCreateIssueReturnBody(
+			RestClient client,
+			String projectKey,
+			String sum,
+			String desc,
+			String issueType,
+			String relatedStoryKey,
+			String assigneeAccountId,
+			boolean includeParent)
+			throws Exception {
+		Map<String, Object> fields = new LinkedHashMap<>();
+		fields.put("project", Map.of("key", projectKey));
+		fields.put("summary", sum);
+		fields.put("issuetype", Map.of("name", issueType));
+		fields.put("description", simpleAdfFromPlainText(desc));
+		if (includeParent) {
+			fields.put("parent", Map.of("key", relatedStoryKey.trim()));
+		}
+		if (assigneeAccountId != null && !assigneeAccountId.isBlank()) {
+			fields.put("assignee", Map.of("id", assigneeAccountId.trim()));
+		}
+		Map<String, Object> payload = Map.of("fields", fields);
+		String json = objectMapper.writeValueAsString(payload);
+		return client.post()
+				.uri("/rest/api/3/issue")
+				.contentType(MediaType.APPLICATION_JSON)
+				.body(json)
+				.retrieve()
+				.body(String.class);
 	}
 
 	/**

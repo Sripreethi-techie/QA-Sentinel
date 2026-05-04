@@ -3,7 +3,9 @@ import type { QaStatus } from "../types/qa";
 const styles: Record<string, string> = {
   PASS:
     "bg-emerald-500/15 text-emerald-700 ring-emerald-500/25 dark:text-emerald-400 dark:ring-emerald-400/30",
+  pass: "bg-emerald-500/15 text-emerald-700 ring-emerald-500/25 dark:text-emerald-400 dark:ring-emerald-400/30",
   FAIL: "bg-rose-500/15 text-rose-700 ring-rose-500/25 dark:text-rose-400 dark:ring-rose-400/30",
+  fail: "bg-rose-500/15 text-rose-700 ring-rose-500/25 dark:text-rose-400 dark:ring-rose-400/30",
   ERROR: "bg-amber-500/15 text-amber-800 ring-amber-500/25 dark:text-amber-300 dark:ring-amber-400/25",
   RUNNING:
     "bg-blue-500/15 text-blue-700 ring-blue-500/25 dark:text-blue-400 dark:ring-blue-400/30",

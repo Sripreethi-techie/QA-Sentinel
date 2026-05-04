@@ -38,7 +38,9 @@ export interface JiraIssueRow {
   status: string;
   assignee: string;
   updated: string;
-  qaResult?: QaStatus | "—";
+  /** Dashboard: derived from linked QA-filed bugs (pass = 0, fail = ≥1). */
+  qaResult?: "pass" | "fail" | QaStatus | "—";
+  bugCount?: number;
   bugLink?: string;
 }
 
@@ -81,4 +83,14 @@ export interface ApiBugReport {
   failedStepSummary: string;
   failedStep?: TestStep | null;
   recordedAt: string;
+}
+
+/** GET /api/v1/health/integrations */
+export interface IntegrationHealthPayload {
+  jiraConfigured: boolean;
+  jiraReachable: boolean;
+  groqConfigured: boolean;
+  playwrightRunnerReady: boolean;
+  lastStoryFetchError: string;
+  detail: string;
 }

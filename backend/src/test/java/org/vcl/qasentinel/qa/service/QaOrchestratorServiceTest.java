@@ -9,16 +9,19 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.lenient;
 
 import java.util.List;
 import java.util.Optional;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.vcl.qasentinel.ai.JiraBugIdempotencyStore;
 import org.vcl.qasentinel.ai.QaRunHistoryStore;
 import org.vcl.qasentinel.config.QaFlowProperties;
 import org.vcl.qasentinel.jira.JiraIssuePrd;
@@ -43,7 +46,15 @@ class QaOrchestratorServiceTest {
 	@Mock
 	private QaRunHistoryStore runHistory;
 	@Mock
+	private JiraBugIdempotencyStore jiraBugIdempotencyStore;
+	@Mock
 	private DemoLockedPlanLoader demoLockedPlanLoader;
+
+	@BeforeEach
+	void stubIdempotency() {
+		lenient().when(jiraBugIdempotencyStore.findExistingBugKey(anyString())).thenReturn(Optional.empty());
+		lenient().when(qaFlowProperties.isAllowPrivateEnvUrls()).thenReturn(true);
+	}
 
 	@InjectMocks
 	private QaOrchestratorService orchestrator;
@@ -246,7 +257,7 @@ class QaOrchestratorServiceTest {
 	void runAllStoriesBlankProject() {
 		QaBatchResult b = orchestrator.runQaFlowAllStoriesInProject("  ");
 		assertThat(b.items()).hasSize(1);
-		assertThat(b.items().getFirst().status()).isEqualTo("ERROR");
+		assertThat(b.items().get(0).status()).isEqualTo("ERROR");
 	}
 
 	@Test
@@ -254,6 +265,6 @@ class QaOrchestratorServiceTest {
 		when(qaFlowProperties.isDemoLockedMode()).thenReturn(true);
 		QaBatchResult b = orchestrator.runQaFlowAllStoriesInProject("SCRUM");
 		assertThat(b.items()).hasSize(1);
-		assertThat(b.items().getFirst().message()).containsIgnoringCase("demo");
+		assertThat(b.items().get(0).message()).containsIgnoringCase("demo");
 	}
 }

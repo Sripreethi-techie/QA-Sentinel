@@ -1,70 +1,32 @@
-# Autonomous QA Sentinel — runbook
+# QA Sentinel runbook
 
-Monorepo layout:
+## Jira bug parent vs link-only (`jira.bug-parent-story-enabled`)
 
-- [`backend/`](backend/) — Spring Boot (API, QA orchestration, Groq, Jira, bundled SPA when built)
-- [`frontend/`](frontend/) — Vite + React + Tailwind (optional dev server with `/api` proxy to Spring)
-- [`qa-runner/`](qa-runner/) — Playwright (`npx playwright test`)
+- **`true`**: The backend sets Jira `parent` on the new bug to the user story key so the bug nests under the story in backlogs that allow **Bug → parent Story** (common on some team-managed / Next-gen projects).
+- **`false`**: No parent field; the bug is still **linked** to the story using `jira.bug-link-type-name` (default `Relates`). Use this if issue create fails with a parent/hierarchy validation error.
+- **Sub-task workflow**: If your site requires work under a story to be a **Sub-task** (not a top-level Bug), change `jira.bug-issue-type-name` to `Sub-task` and keep parent enabled only if your template allows Sub-task under Story—this is site-specific; verify in Jira **Create issue** for that project.
 
-## Prerequisites
+## Issue type names for batch/dashboard
 
-- JDK 21, Node 18+, npm
-- Optional: Jira base URL + API token, Groq API key → copy `backend/src/main/resources/application-local.example.properties` to `application-local.properties` and fill values
+Stories are loaded with JQL using `qa.flow.batch-story-issue-type-name`. The name must match Jira exactly (e.g. `Story` vs `User Story`).
 
-## One-server demo (Spring serves UI + API)
+- Call **`GET /api/v1/jira/projects/{PROJECT}/issue-types`** for a list of names, then copy the value into `qa.flow.batch-story-issue-type-name`.
 
-1. Build the UI once:
+## Persistence and idempotency
 
-   ```bash
-   cd frontend
-   npm install
-   npm run build
-   ```
+- **Run history** is appended to `~/.qa-sentinel/run-history.jsonl` by default (see `qa.sentinel.run-history-file`). Restarting the JVM reloads recent runs so **Bug Reports**, **screenshots**, and the **AI agent** still see past failures.
+- **Duplicate bugs**: `qa.sentinel.bug-idempotency-enabled` stores a fingerprint of `(story, trace, failure text, failed step)` → Jira key so repeated batch runs do not file the same bug again.
 
-2. Start the backend (copies `frontend/dist` into the classpath automatically when `dist` exists):
+## API key (production)
 
-   ```bash
-   cd backend
-   ./gradlew bootRun
-   ```
+Set **`qa.sentinel.api-key`** and send header **`X-QA-Sentinel-Api-Key`** on all `/api/**` requests except **`/api/v1/health/**`** (for probes). Leave blank in local dev.
 
-   Windows: `.\gradlew.bat bootRun`
+## Target URL hardening
 
-3. Open **http://localhost:9096** (sidebar: Dashboard, QA Runs, Bug Reports, Loan App, AI Agent).
+With **`qa.flow.allow-private-env-urls=false`** (default in properties comments), URLs whose host is RFC1918 private (10.x, 192.168.x, 172.16–31.x) are rejected. **`localhost`** and **`127.0.0.1`** remain allowed for local QA.
 
-4. Install Playwright browsers once:
+## Batch throttling
 
-   ```bash
-   cd qa-runner
-   npm install
-   ```
-
-5. Run QA from the UI (**Run QA**) or:
-
-   `POST http://localhost:9096/api/qa/run/SCRUM-1` (or any issue key in your Jira project)
-
-   Playwright’s working directory is `../qa-runner` relative to `backend/` (see `qa.playwright.working-dir` in `application.properties`).
-
-## Dev mode (hot-reload UI)
-
-1. Terminal A: `cd backend && ./gradlew bootRun`
-2. Terminal B: `cd frontend && npm run dev` → **http://localhost:5173**
-3. Set `qa.flow.default-env-base-url=http://localhost:5173/loan` if you want the orchestrator’s default browser target to match Vite.
-
-## Playwright
-
-- **Green (intentional bugs asserted):** `npx playwright test tests/demo-loan-app.spec.js` — expects swapped list, invisible error banner, etc.
-- **Red (correct behavior asserted):** `npx playwright test tests/dynamic-test.spec.js -g "demo loan application"` — three tests stay **failing** while API/UI bugs exist; they document “what should pass” after fixes.
-
-Override base URL:
-
-```bash
-set LOAN_ORIGIN=http://localhost:9096
-npx playwright test tests/demo-loan-app.spec.js
-```
-
-On Unix: `LOAN_ORIGIN=http://localhost:9096 npx playwright test ...`
-
-## Deprecated
-
-The old Express demo under `AgenticPMO/demo-loan-app/` is replaced by Spring `POST/GET /api/loan/*` and the Loan App routes in `frontend/`.
+- **`qa.flow.batch-max-stories`**: cap list size.
+- **`qa.flow.batch-concurrency`**: parallel `runQaFlow` threads (default `1`). When `> 1`, **`qa.flow.batch-delay-ms-between-stories`** is ignored.
+- **`qa.flow.batch-dry-run`**: list stories only; no Playwright/Jira bug steps.

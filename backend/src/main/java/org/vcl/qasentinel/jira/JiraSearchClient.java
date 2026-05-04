@@ -1,5 +1,6 @@
 package org.vcl.qasentinel.jira;
 
+import java.net.URI;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
@@ -14,6 +15,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.util.UriBuilder;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -22,11 +24,15 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import org.vcl.qasentinel.config.JiraProperties;
+import org.vcl.qasentinel.util.HttpRetry;
 
 @Component
 @RequiredArgsConstructor
 @Slf4j
 public class JiraSearchClient {
+
+	/** Replaces removed {@code GET /rest/api/3/search} (see Atlassian CHANGE-2046). */
+	private static final String SEARCH_JQL_PATH = "/rest/api/3/search/jql";
 
 	private final JiraProperties jiraProperties;
 	private final ObjectMapper objectMapper;
@@ -68,22 +74,9 @@ public class JiraSearchClient {
 			return List.of();
 		}
 		int cap = Math.max(1, Math.min(maxResults, jiraProperties.getMaxResults()));
-		String base = jiraProperties.getBaseUrl().trim().replaceAll("/+$", "");
-		RestClient client = RestClient.builder()
-				.baseUrl(base)
-				.defaultHeader(HttpHeaders.ACCEPT, "application/json")
-				.build();
 		try {
 			log.info("Jira JQL Query: {}", jql);
-			String body = client.get()
-					.uri(uriBuilder -> uriBuilder.path("/rest/api/3/search")
-							.queryParam("jql", jql)
-							.queryParam("maxResults", cap)
-							.queryParam("fields", "key")
-							.build())
-					.headers(h -> h.setBasicAuth(jiraProperties.getEmail(), jiraProperties.getApiToken()))
-					.retrieve()
-					.body(String.class);
+			String body = executeSearchJql(jql, cap, List.of("key"));
 			if (body == null || body.isBlank()) {
 				log.info("Jira issues fetched: {}", 0);
 				return List.of();
@@ -150,34 +143,45 @@ public class JiraSearchClient {
 	}
 
 	private JiraIssuePrd fetchIssuePrdFromJira(String issueKey) {
-		String base = jiraProperties.getBaseUrl().trim().replaceAll("/+$", "");
+		String base = jiraProperties.getApiBaseUrl().trim().replaceAll("/+$", "");
 		RestClient client = RestClient.builder()
 				.baseUrl(base)
 				.defaultHeader(HttpHeaders.ACCEPT, "application/json")
 				.build();
 		String fields = issuePrdFieldsParam();
-		String body = client.get()
-				.uri(uriBuilder -> uriBuilder
-						.path("/rest/api/3/issue/{key}")
-						.queryParam("fields", fields)
-						.build(issueKey))
-				.headers(h -> h.setBasicAuth(jiraProperties.getEmail(), jiraProperties.getApiToken()))
-				.retrieve()
-				.body(String.class);
-		if (body == null || body.isBlank()) {
-			throw new IllegalStateException("Jira returned empty body for issue " + issueKey);
+		RestClientException last = null;
+		for (int attempt = 0; attempt < 3; attempt++) {
+			try {
+				String body = client.get()
+						.uri(uriBuilder -> uriBuilder
+								.path("/rest/api/3/issue/{key}")
+								.queryParam("fields", fields)
+								.build(issueKey))
+						.headers(h -> h.setBasicAuth(jiraProperties.getEmail(), jiraProperties.getApiToken()))
+						.retrieve()
+						.body(String.class);
+				if (body == null || body.isBlank()) {
+					throw new IllegalStateException("Jira returned empty body for issue " + issueKey);
+				}
+				JsonNode root = objectMapper.readTree(body);
+				JsonNode fieldsNode = root.path("fields");
+				String summary = fieldsNode.path("summary").asText("");
+				String descPlain = JiraAdfText.toPlainText(fieldsNode.path("description"));
+				String acPlain = extractAcceptanceCriteriaPlain(fieldsNode);
+				return new JiraIssuePrd(issueKey, summary, descPlain, acPlain);
+			}
+			catch (JsonProcessingException e) {
+				throw new IllegalStateException("Jira issue JSON parse failed for " + issueKey + ": " + e.getMessage(), e);
+			}
+			catch (RestClientException ex) {
+				last = ex;
+				if (!HttpRetry.isRetryable(ex) || attempt == 2) {
+					throw ex;
+				}
+				HttpRetry.sleepBackoffMs(attempt);
+			}
 		}
-		try {
-			JsonNode root = objectMapper.readTree(body);
-			JsonNode fieldsNode = root.path("fields");
-			String summary = fieldsNode.path("summary").asText("");
-			String descPlain = JiraAdfText.toPlainText(fieldsNode.path("description"));
-			String acPlain = extractAcceptanceCriteriaPlain(fieldsNode);
-			return new JiraIssuePrd(issueKey, summary, descPlain, acPlain);
-		}
-		catch (JsonProcessingException e) {
-			throw new IllegalStateException("Jira issue JSON parse failed for " + issueKey + ": " + e.getMessage(), e);
-		}
+		throw last != null ? last : new IllegalStateException("Jira issue fetch failed for " + issueKey);
 	}
 
 	private String extractAcceptanceCriteriaPlain(JsonNode fields) {
@@ -249,22 +253,11 @@ public class JiraSearchClient {
 	}
 
 	private List<JiraIssueView> fetchFromJira(String jql, int maxResults) {
-		String base = jiraProperties.getBaseUrl().trim().replaceAll("/+$", "");
-		RestClient client = RestClient.builder()
-				.baseUrl(base)
-				.defaultHeader(HttpHeaders.ACCEPT, "application/json")
-				.build();
-
 		log.info("Jira JQL Query: {}", jql);
-		String body = client.get()
-				.uri(uriBuilder -> uriBuilder.path("/rest/api/3/search")
-						.queryParam("jql", jql)
-						.queryParam("maxResults", maxResults)
-						.queryParam("fields", "summary,status,assignee,updated")
-						.build())
-				.headers(h -> h.setBasicAuth(jiraProperties.getEmail(), jiraProperties.getApiToken()))
-				.retrieve()
-				.body(String.class);
+		String body = executeSearchJql(
+				jql,
+				maxResults,
+				List.of("summary", "status", "assignee", "updated"));
 
 		if (body == null || body.isBlank()) {
 			log.info("Jira issues fetched: {}", 0);
@@ -323,5 +316,125 @@ public class JiraSearchClient {
 			}
 			return null;
 		}
+	}
+
+	/**
+	 * Jira Cloud enhanced JQL search (GET). Response still includes an {@code issues} array; pagination uses
+	 * {@code nextPageToken} when needed (we only request the first page here).
+	 */
+	public List<String> listIssueTypeNamesForProject(String projectKey) {
+		requireLiveJira();
+		String pk = projectKey == null ? "" : projectKey.trim().toUpperCase(Locale.ROOT);
+		if (pk.isBlank()) {
+			return List.of();
+		}
+		String base = jiraProperties.getApiBaseUrl().trim().replaceAll("/+$", "");
+		RestClient client = RestClient.builder()
+				.baseUrl(base)
+				.defaultHeader(HttpHeaders.ACCEPT, "application/json")
+				.build();
+		try {
+			String projectBody = withRestRetries(
+					() -> client.get()
+							.uri("/rest/api/3/project/{key}", pk)
+							.headers(h -> h.setBasicAuth(jiraProperties.getEmail(), jiraProperties.getApiToken()))
+							.retrieve()
+							.body(String.class));
+			if (projectBody == null || projectBody.isBlank()) {
+				throw new IllegalStateException("Jira returned empty project body for " + pk);
+			}
+			String projectId = objectMapper.readTree(projectBody).path("id").asText("").trim();
+			if (projectId.isEmpty()) {
+				throw new IllegalStateException("Jira project response missing id for " + pk);
+			}
+			String typesBody = withRestRetries(
+					() -> client.get()
+							.uri(uriBuilder -> uriBuilder
+									.path("/rest/api/3/issuetype/project")
+									.queryParam("projectId", projectId)
+									.build())
+							.headers(h -> h.setBasicAuth(jiraProperties.getEmail(), jiraProperties.getApiToken()))
+							.retrieve()
+							.body(String.class));
+			if (typesBody == null || typesBody.isBlank()) {
+				return List.of();
+			}
+			JsonNode arr = objectMapper.readTree(typesBody);
+			if (!arr.isArray()) {
+				return List.of();
+			}
+			List<String> names = new ArrayList<>();
+			for (JsonNode n : arr) {
+				String name = n.path("name").asText("").trim();
+				if (!name.isEmpty()) {
+					names.add(name);
+				}
+			}
+			return Collections.unmodifiableList(names);
+		}
+		catch (RestClientException ex) {
+			throw new IllegalStateException("Jira issue types list failed: " + ex.getMessage(), ex);
+		}
+		catch (JsonProcessingException e) {
+			throw new IllegalStateException("Jira issue types JSON parse failed: " + e.getMessage(), e);
+		}
+	}
+
+	private static String withRestRetries(RestSupplier supplier) {
+		RestClientException last = null;
+		for (int attempt = 0; attempt < 3; attempt++) {
+			try {
+				return supplier.get();
+			}
+			catch (RestClientException ex) {
+				last = ex;
+				if (!HttpRetry.isRetryable(ex) || attempt == 2) {
+					throw ex;
+				}
+				HttpRetry.sleepBackoffMs(attempt);
+			}
+		}
+		throw last != null ? last : new IllegalStateException("Jira request failed after retries");
+	}
+
+	@FunctionalInterface
+	private interface RestSupplier {
+		String get() throws RestClientException;
+	}
+
+	private String executeSearchJql(String jql, int maxResults, List<String> fields) {
+		String base = jiraProperties.getApiBaseUrl().trim().replaceAll("/+$", "");
+		RestClient client = RestClient.builder()
+				.baseUrl(base)
+				.defaultHeader(HttpHeaders.ACCEPT, "application/json")
+				.build();
+		RestClientException last = null;
+		for (int attempt = 0; attempt < 3; attempt++) {
+			try {
+				return client.get()
+						.uri(uriBuilder -> buildSearchJqlUri(uriBuilder, jql, maxResults, fields))
+						.headers(h -> h.setBasicAuth(jiraProperties.getEmail(), jiraProperties.getApiToken()))
+						.retrieve()
+						.body(String.class);
+			}
+			catch (RestClientException ex) {
+				last = ex;
+				if (!HttpRetry.isRetryable(ex) || attempt == 2) {
+					throw ex;
+				}
+				HttpRetry.sleepBackoffMs(attempt);
+			}
+		}
+		throw last != null ? last : new IllegalStateException("Jira search failed after retries");
+	}
+
+	private static URI buildSearchJqlUri(UriBuilder uriBuilder, String jql, int maxResults, List<String> fields) {
+		UriBuilder b = uriBuilder.path(SEARCH_JQL_PATH).queryParam("jql", jql).queryParam("maxResults", maxResults);
+		for (String f : fields) {
+			if (f != null && !f.isBlank()) {
+				b = b.queryParam("fields", f.trim());
+			}
+		}
+		return b.build();
 	}
 }
