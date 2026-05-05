@@ -1,6 +1,7 @@
 import { ExternalLink, ImageOff, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { fetchBugReports } from "../api/qaApi";
+import { useSentinel } from "../context/SentinelContext";
 import type { ApiBugReport, TestStep } from "../types/qa";
 
 function BugScreenshot({
@@ -49,6 +50,7 @@ function formatFailedStep(step: TestStep | null | undefined): string {
 }
 
 export function BugReportsPage() {
+  const { agentDataEpoch } = useSentinel();
   const [reports, setReports] = useState<ApiBugReport[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -69,7 +71,7 @@ export function BugReportsPage() {
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, agentDataEpoch]);
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">

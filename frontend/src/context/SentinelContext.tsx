@@ -33,6 +33,20 @@ function id() {
   return `run-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+/** Clears persisted bug/session maps so the UI does not mix prior runs with the new agent execution. */
+function resetAgentSessionCaches(
+  setBugs: Dispatch<SetStateAction<BugReportItem[]>>,
+  setIssueQaMap: Dispatch<SetStateAction<Record<string, QaStatus | "—">>>,
+  setIssueBugLink: Dispatch<SetStateAction<Record<string, string>>>,
+) {
+  setBugs([]);
+  localStorage.setItem(STORAGE_BUGS, JSON.stringify([]));
+  setIssueQaMap({});
+  localStorage.setItem(STORAGE_ISSUES, JSON.stringify({}));
+  setIssueBugLink({});
+  localStorage.setItem("qa-sentinel-issue-bug-v1", JSON.stringify({}));
+}
+
 export type HealthState = "unknown" | "healthy" | "degraded";
 
 interface SentinelContextValue {
@@ -63,6 +77,8 @@ interface SentinelContextValue {
     bugsCreated: number;
     lastRunStatus: QaStatus | "—" | "RUNNING";
   };
+  /** Increments when an agent run finishes — subscribe to refetch Jira/bug API data. */
+  agentDataEpoch: number;
 }
 
 const SentinelContext = createContext<SentinelContextValue | null>(null);
@@ -82,6 +98,7 @@ export function SentinelProvider({ children }: { children: ReactNode }) {
   const [health, setHealth] = useState<HealthState>("unknown");
   const [running, setRunning] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
+  const [agentDataEpoch, setAgentDataEpoch] = useState(0);
   const refreshHealth = useCallback(async () => {
     try {
       const h = await fetch("/api/v1/qa/health");
@@ -108,6 +125,7 @@ export function SentinelProvider({ children }: { children: ReactNode }) {
       setIssueKey(issueKeyOverride.trim());
     }
     setLastError(null);
+    resetAgentSessionCaches(setBugs, setIssueQaMap, setIssueBugLink);
     setRunning(true);
     const runId = id();
     const startedAt = new Date().toISOString();
@@ -127,9 +145,9 @@ export function SentinelProvider({ children }: { children: ReactNode }) {
         `[sentinel] Resolving PRD / test context…`,
       ],
     };
-    setRuns((prev) => {
-      const next = [initial, ...prev];
-      localStorage.setItem(STORAGE_RUNS, JSON.stringify(next.slice(0, 50)));
+    setRuns(() => {
+      const next = [initial];
+      localStorage.setItem(STORAGE_RUNS, JSON.stringify(next));
       return next;
     });
 
@@ -234,6 +252,7 @@ export function SentinelProvider({ children }: { children: ReactNode }) {
       timers.forEach(clearTimeout);
       setRunning(false);
       void refreshHealth();
+      setAgentDataEpoch((n) => n + 1);
     }
   }, [issueKey, projectKey, refreshHealth]);
 
@@ -241,6 +260,7 @@ export function SentinelProvider({ children }: { children: ReactNode }) {
     const pk = projectKey.trim();
     if (!pk) return;
     setLastError(null);
+    resetAgentSessionCaches(setBugs, setIssueQaMap, setIssueBugLink);
     setRunning(true);
     const runId = id();
     const startedAt = new Date().toISOString();
@@ -258,9 +278,9 @@ export function SentinelProvider({ children }: { children: ReactNode }) {
       failedStep: null,
       logs: [`[${startedAt}] Batch QA — all stories in project ${pk}`],
     };
-    setRuns((prev) => {
-      const next = [initial, ...prev];
-      localStorage.setItem(STORAGE_RUNS, JSON.stringify(next.slice(0, 50)));
+    setRuns(() => {
+      const next = [initial];
+      localStorage.setItem(STORAGE_RUNS, JSON.stringify(next));
       return next;
     });
 
@@ -356,6 +376,7 @@ export function SentinelProvider({ children }: { children: ReactNode }) {
     } finally {
       setRunning(false);
       void refreshHealth();
+      setAgentDataEpoch((n) => n + 1);
     }
   }, [projectKey, refreshHealth]);
 
@@ -405,6 +426,7 @@ export function SentinelProvider({ children }: { children: ReactNode }) {
     running,
     lastError,
     metrics,
+    agentDataEpoch,
   };
 
   return <SentinelContext.Provider value={value}>{children}</SentinelContext.Provider>;

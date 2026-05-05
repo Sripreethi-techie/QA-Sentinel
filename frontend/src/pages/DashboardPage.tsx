@@ -49,7 +49,7 @@ function distinctBugCountForStory(storyKey: string, localBugs: BugReportItem[], 
 }
 
 export function DashboardPage() {
-  const { metrics, bugs: localBugs, runs, running, projectKey } = useSentinel();
+  const { metrics, bugs: localBugs, runs, running, projectKey, agentDataEpoch } = useSentinel();
   const [baseRows, setBaseRows] = useState<JiraIssueRow[]>([]);
   const [apiBugs, setApiBugs] = useState<ApiBugReport[]>([]);
   const [loading, setLoading] = useState(true);
@@ -103,7 +103,7 @@ export function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [projectKey]);
+  }, [projectKey, agentDataEpoch]);
 
   useEffect(() => {
     void loadStories();

@@ -28,6 +28,7 @@ export function TopBar() {
     runAgent,
     running,
     health,
+    agentDataEpoch,
   } = useSentinel();
   const { resolved, toggle } = useTheme();
   const { setMode } = useAppMode();
@@ -79,7 +80,7 @@ export function TopBar() {
     return () => {
       cancelled = true;
     };
-  }, [projectKey, setTicketSelection]);
+  }, [projectKey, setTicketSelection, agentDataEpoch]);
 
   const runLabel = useMemo(() => {
     if (running) return "Running…";
